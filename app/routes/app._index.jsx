@@ -183,14 +183,32 @@ export const loader = async ({ request }) => {
     warehouses.map((w) => [w.productId, w.reorder]),
   );
 
-  const productsWithWarehouse = data.data.products.edges.map((edge) => ({
+ const productsWithWarehouse = data.data.products.edges
+  .map((edge) => ({
     ...edge,
     node: {
       ...edge.node,
       externalWarehouse: warehouseMap[edge.node.id] || "",
       reorderLevel: reorderMap[edge.node.id] || "",
     },
-  }));
+  }))
+  .sort((a, b) => {
+    const aVariant = a.node.variants.edges[0]?.node;
+    const bVariant = b.node.variants.edges[0]?.node;
+
+    const aAussenlager =
+      Number(aVariant?.aussenlager?.value) || 0;
+
+    const bAussenlager =
+      Number(bVariant?.aussenlager?.value) || 0;
+
+    // Products with aussenlager > 0 come first
+    if (aAussenlager > 0 && bAussenlager <= 0) return -1;
+    if (aAussenlager <= 0 && bAussenlager > 0) return 1;
+
+    // Higher aussenlager first
+    return bAussenlager - aAussenlager;
+  });
 
   return json({
     products: productsWithWarehouse,
