@@ -763,7 +763,11 @@ export default function Index() {
   // APPLY FILTERS — products are already pre-sorted by loader (aussenlager first)
   const filteredProducts = useMemo(() => {
     return products.filter(({ node }) => {
-      const { firstVariant } = getRowInfo(node);
+      const { firstVariant, totalAussenlager } = getRowInfo(node);
+
+      // Baseline: never show products where every variant has 0 / no aussenlager
+      if (totalAussenlager <= 0) return false;
+
       const warehouseQty = Number(firstVariant?.aussenlager?.value) || 0;
       const hauptlagerQty = Number(firstVariant?.hauptlager?.value) || 0;
       const meldeQty = Number(firstVariant?.melde?.value) || 0;
@@ -777,7 +781,6 @@ export default function Index() {
       }
       return true;
     });
-    // No extra sort needed — server already delivered aussenlager-first order
   }, [products, filterType]);
 
   return (
@@ -1168,7 +1171,9 @@ export default function Index() {
                                   </thead>
 
                                   <tbody>
-                                    {variants.map((vr) => (
+                                    {variants
+                                      .filter((vr) => Number(vr.aussenlager?.value) > 0)
+                                      .map((vr) => (
                                       <tr
                                         key={vr.id}
                                         style={{ borderTop: "1px solid #e1e3e5" }}
