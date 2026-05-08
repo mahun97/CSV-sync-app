@@ -73,10 +73,9 @@ const getStockStatus = (qty) => {
 /* =======================
    FILTER LOGIC
 ======================= */
-// Filter 1: Hauptlager <= Außenlager (main inventory <= external inventory)
-const filterLowMainInventory = (node, warehouseQty) => {
-  const mainQty = Number(node.totalInventory) || 0;
-  return mainQty <= warehouseQty;
+// Filter 1: Hauptlager <= Melde (hauptlager at or below reorder point)
+const filterLowMainInventory = (hauptlagerQty, meldeQty) => {
+  return hauptlagerQty <= meldeQty;
 };
 
 // Filter 2: Hauptlager minus Melde <= Aussenlager
@@ -137,6 +136,10 @@ export const loader = async ({ request }) => {
                   }
 
                   hauptlager: metafield(namespace: "custom", key: "hauptlager") {
+                    value
+                  }
+
+                  melde: metafield(namespace: "custom", key: "melde") {
                     value
                   }
 
@@ -684,13 +687,16 @@ export default function Index() {
   const filteredProducts = useMemo(() => {
     return products.filter(({ node }) => {
       const { firstVariant } = getRowInfo(node);
-      // warehouseQty now reads from the aussenlager metafield on the variant
+      // aussenlager and melde read directly from Shopify variant metafields
       const warehouseQty = Number(firstVariant?.aussenlager?.value) || 0;
+      const hauptlagerQty = Number(firstVariant?.hauptlager?.value) || 0;
+      const meldeQty = Number(firstVariant?.melde?.value) || 0;
 
       if (filterType === "none") {
         return true;
       } else if (filterType === "lowMain") {
-        return filterLowMainInventory(node, warehouseQty);
+        // Red zone: hauptlager <= melde (reorder point breached)
+        return filterLowMainInventory(hauptlagerQty, meldeQty);
       } else if (filterType === "lowAfterReorder") {
         return filterLowAfterReorder(node, warehouseQty);
       }
@@ -799,7 +805,7 @@ export default function Index() {
                 options={[
                   { label: "Kein Filter", value: "none" },
                   {
-                    label: "🔴 Nur Hauptlager <= Außenlager",
+                    label: "🔴 Nur Hauptlager <= Meldebestand",
                     value: "lowMain",
                   },
                   {
@@ -824,7 +830,7 @@ export default function Index() {
                   <th style={thStyle}>Artikel</th>
                   <th style={thStyle}>Hersteller</th>
                   {/* Renamed: was "Hauptlager", now shows real Shopify stock */}
-                  <th style={thStyle}>Inventar</th>
+                  <th style={thStyle}>Inventory</th>
                   <th style={thStyle}>Status</th>
                   {/* New column: shows custom.hauptlager metafield */}
                   <th style={thStyle}>Hauptlager</th>
@@ -864,6 +870,16 @@ export default function Index() {
                     const currentHauptlager =
                       Number(firstVariant?.hauptlager?.value) || 0;
 
+                    // Meldebestand from custom.melde metafield
+                    const meldeValue = !hasRealVariants
+                      ? firstVariant?.melde?.value ?? "—"
+                      : "—";
+                    const meldeQty = Number(firstVariant?.melde?.value) || 0;
+
+                    // Red zone: hauptlager has hit or dropped below the reorder point
+                    const isRedZone =
+                      !hasRealVariants && currentHauptlager <= meldeQty && meldeQty > 0;
+
                     // Stock status badge
                     const stockStatus = getStockStatus(qty);
 
@@ -871,10 +887,9 @@ export default function Index() {
                       <Fragment key={node.id}>
                         <tr
                           style={{
-                            background:
-                              stockStatus.label === "Niedrig"
-                                ? "rgba(255, 0, 0, 0.05)"
-                                : "transparent",
+                            background: isRedZone
+                              ? "rgba(255, 0, 0, 0.08)"
+                              : "transparent",
                           }}
                         >
                           <td style={{ ...tdStyle, minWidth: 220 }}>
@@ -967,20 +982,12 @@ export default function Index() {
 
                           <td style={{ ...tdStyle, minWidth: 160 }}>
                             {!hasRealVariants ? (
-                              <InlineEditable
-                                value={node.reorderLevel || ""}
-                                editing={isEditing(
-                                  "product",
-                                  node.id,
-                                  "reorder",
+                              <InlineStack gap="200" blockAlign="center">
+                                <Text as="p">{meldeValue}</Text>
+                                {isRedZone && (
+                                  <Badge tone="critical">🔴 Rot</Badge>
                                 )}
-                                onStartEdit={() =>
-                                  startEdit("product", node.id, "reorder")
-                                }
-                                onCancelEdit={cancelEdit}
-                                onSave={(v) => saveReorderLevel(node.id, v)}
-                                type="number"
-                              />
+                              </InlineStack>
                             ) : (
                               <Text tone="subdued">—</Text>
                             )}
@@ -1052,8 +1059,7 @@ export default function Index() {
                                           textAlign: "left",
                                         }}
                                       >
-                                        
-Inventar
+                                        Inventory
                                       </th>
                                     </tr>
                                   </thead>
