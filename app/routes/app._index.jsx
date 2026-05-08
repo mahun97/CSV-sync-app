@@ -824,7 +824,7 @@ export default function Index() {
                   <th style={thStyle}>Artikel</th>
                   <th style={thStyle}>Hersteller</th>
                   {/* Renamed: was "Hauptlager", now shows real Shopify stock */}
-                  <th style={thStyle}>Inventory</th>
+                  <th style={thStyle}>Inventar</th>
                   <th style={thStyle}>Status</th>
                   {/* New column: shows custom.hauptlager metafield */}
                   <th style={thStyle}>Hauptlager</th>
@@ -1052,7 +1052,8 @@ export default function Index() {
                                           textAlign: "left",
                                         }}
                                       >
-                                        Inventory
+                                        
+Inventar
                                       </th>
                                     </tr>
                                   </thead>
