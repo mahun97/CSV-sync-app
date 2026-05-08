@@ -545,20 +545,74 @@ export default function Index() {
 
   /* Client-side dropdown filter on top of the server-side baseline */
   const filteredProducts = useMemo(() => {
-    return products.filter(({ node }) => {
-      const { firstVariant, totalAussenlager } = getRowInfo(node);
-      if (totalAussenlager <= 0) return false;  // already filtered server-side, but guard here too
+  return products.filter(({ node }) => {
+    const {
+      variants,
+      firstVariant,
+      hasRealVariants,
+      totalAussenlager,
+      totalHauptlager,
+    } = getRowInfo(node);
 
-      const hauptlagerQty = Number(firstVariant?.hauptlager?.value) || 0;
-      const meldeQty      = Number(firstVariant?.melde?.value)      || 0;
-      const warehouseQty  = Number(firstVariant?.aussenlager?.value) || 0;
+    // already required
+    if (totalAussenlager <= 0) return false;
 
-      if (filterType === "none")           return true;
-      if (filterType === "lowMain")        return filterLowMainInventory(hauptlagerQty, meldeQty);
-      if (filterType === "lowAfterReorder") return filterLowAfterReorder(node, warehouseQty);
+    // =========================
+    // DEFAULT = NO FILTER
+    // =========================
+    if (filterType === "none") {
       return true;
-    });
-  }, [products, filterType]);
+    }
+
+    // =========================
+    // SINGLE PRODUCT
+    // =========================
+    if (!hasRealVariants) {
+      const hauptlagerQty =
+        Number(firstVariant?.hauptlager?.value) ||
+        (
+          (Number(firstVariant?.inventoryQuantity) || 0) -
+          (Number(firstVariant?.aussenlager?.value) || 0)
+        );
+
+      const meldeQty =
+        Number(firstVariant?.melde?.value) || 0;
+
+      const warehouseQty =
+        Number(firstVariant?.aussenlager?.value) || 0;
+
+      if (filterType === "lowMain") {
+        return hauptlagerQty <= meldeQty;
+      }
+
+      if (filterType === "lowAfterReorder") {
+        return hauptlagerQty - meldeQty <= warehouseQty;
+      }
+
+      return true;
+    }
+
+    // =========================
+    // VARIANT PRODUCTS
+    // =========================
+
+    // total melde from all variants
+    const totalMelde = variants.reduce(
+      (sum, v) => sum + (Number(v.melde?.value) || 0),
+      0
+    );
+
+    if (filterType === "lowMain") {
+      return totalHauptlager <= totalMelde;
+    }
+
+    if (filterType === "lowAfterReorder") {
+      return totalHauptlager - totalMelde <= totalAussenlager;
+    }
+
+    return true;
+  });
+}, [products, filterType]);
 
   return (
     <>
