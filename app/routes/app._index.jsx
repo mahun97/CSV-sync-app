@@ -62,7 +62,7 @@ function buildProductsQuery(raw) {
   return `title:${quoted} OR sku:${quoted}`;
 }
 
-// ✅ Stock status - triggers at <= 5 for "low"
+// Stock status - triggers at <= 5 for "low"
 const getStockStatus = (qty) => {
   const count = Number(qty) || 0;
   if (count <= 5) return { label: "Niedrig", tone: "critical" };
@@ -109,12 +109,12 @@ export const loader = async ({ request }) => {
   const res = await admin.graphql(
     `query Products($first: Int!, $after: String, $query: String) {
       products(
-  first: $first
-  after: $after
-  query: $query
-  sortKey: TITLE
-  reverse: false
-) {
+        first: $first
+        after: $after
+        query: $query
+        sortKey: TITLE
+        reverse: false
+      ) {
         edges {
           cursor
           node {
@@ -131,7 +131,18 @@ export const loader = async ({ request }) => {
                   sku
                   price
                   inventoryQuantity
-                  inventoryItem { id }
+
+                  aussenlager: metafield(namespace: "custom", key: "aussenlager") {
+                    value
+                  }
+
+                  hauptlager: metafield(namespace: "custom", key: "hauptlager") {
+                    value
+                  }
+
+                  inventoryItem {
+                    id
+                  }
                 }
               }
             }
@@ -203,11 +214,11 @@ export const action = async ({ request }) => {
 
     await db.externalWarehouse.upsert({
       where: { shop_productId: { shop, productId } },
-      update: { reorder: String(reorder || "0") },   // ⭐ FIX
+      update: { reorder: String(reorder || "0") },
       create: {
         shop,
         productId,
-        reorder: String(reorder || "0"),             // ⭐ FIX
+        reorder: String(reorder || "0"),
         warehouse: "0",
       },
     });
@@ -220,11 +231,11 @@ export const action = async ({ request }) => {
 
     await admin.graphql(
       `mutation productVariantDelete($id: ID!) {
-      productVariantDelete(id: $id) {
-        deletedProductVariantIdss
-        userErrors { field message }
-      }
-    }`,
+        productVariantDelete(id: $id) {
+          deletedProductVariantId
+          userErrors { field message }
+        }
+      }`,
       { variables: { id: variantId } },
     );
 
@@ -309,6 +320,56 @@ export const action = async ({ request }) => {
     return json({ success: true });
   }
 
+  // -------------------------------------------------------
+  // NEW ACTION: transfer-to-aussenlager
+  // Updates custom.aussenlager = newAussenlager
+  // Updates custom.hauptlager  = currentHauptlager - newAussenlager
+  // Both metafields are set via metafieldsSet on the variant.
+  // -------------------------------------------------------
+  if (type === "transfer-to-aussenlager") {
+    const variantId = form.get("variantId");
+    const newAussenlager = parseInt(form.get("newAussenlager"), 10) || 0;
+    const currentHauptlager = parseInt(form.get("currentHauptlager"), 10) || 0;
+
+    const newHauptlager = currentHauptlager - newAussenlager;
+
+    const result = await admin.graphql(
+      `mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          metafields { key value }
+          userErrors { field message }
+        }
+      }`,
+      {
+        variables: {
+          metafields: [
+            {
+              ownerId: variantId,
+              namespace: "custom",
+              key: "aussenlager",
+              value: String(newAussenlager),
+              // Use "number_integer" if these metafields were created as integers,
+              // or "single_line_text_field" if created as text.
+              type: "number_integer",
+            },
+            {
+              ownerId: variantId,
+              namespace: "custom",
+              key: "hauptlager",
+              value: String(newHauptlager),
+              type: "number_integer",
+            },
+          ],
+        },
+      },
+    );
+
+    const d = await result.json();
+    const errors = d.data?.metafieldsSet?.userErrors;
+    if (errors?.length) return json({ success: false, errors });
+    return json({ success: true });
+  }
+
   if (type === "sync-all-inventory") {
     const productId = form.get("productId");
     const inventoryItemId = form.get("inventoryItemId");
@@ -316,15 +377,13 @@ export const action = async ({ request }) => {
     const newExternalQty = parseInt(form.get("newExternalQty"), 10);
 
     const locRes = await admin.graphql(
-      `
-    query getLocation($id: ID!) {
-      inventoryItem(id: $id) {
-        inventoryLevels(first: 1) {
-          edges { node { location { id } } }
+      `query getLocation($id: ID!) {
+        inventoryItem(id: $id) {
+          inventoryLevels(first: 1) {
+            edges { node { location { id } } }
+          }
         }
-      }
-    }
-  `,
+      }`,
       { variables: { id: inventoryItemId } },
     );
 
@@ -338,13 +397,11 @@ export const action = async ({ request }) => {
     }
 
     const invRes = await admin.graphql(
-      `
-    mutation inventorySet($input: InventorySetQuantitiesInput!) {
-      inventorySetQuantities(input: $input) {
-        userErrors { field message }
-      }
-    }
-  `,
+      `mutation inventorySet($input: InventorySetQuantitiesInput!) {
+        inventorySetQuantities(input: $input) {
+          userErrors { field message }
+        }
+      }`,
       {
         variables: {
           input: {
@@ -515,7 +572,7 @@ export default function Index() {
   const [editingCell, setEditingCell] = useState(null);
   const [tempWarehouse2, setTempWarehouse2] = useState({});
 
-  // ✅ FILTER STATE
+  // FILTER STATE
   const [filterType, setFilterType] = useState("none");
 
   // Search UI
@@ -569,29 +626,18 @@ export default function Index() {
     submit({ type: "reorder-level", productId, reorder }, { method: "post" });
   };
 
-  const transferFromExternalWarehouse = async (
-    productId,
-    inventoryItemId,
-    shopifyQty,
-    externalQty,
-    inputQty,
-  ) => {
-    const newQty = Number(inputQty) || 0;
-
-    if (externalQty <= 0 && newQty <= 0) return;
-
-    const qtyToMove = externalQty + newQty;
-
-    const newShopifyQty = shopifyQty + qtyToMove;
-    const newExternalQty = 0;
+  // Updated: sets custom.aussenlager = inputQty,
+  // and custom.hauptlager = currentHauptlager - inputQty
+  const transferToAussenlager = (variantId, currentHauptlager, productId, inputQty) => {
+    const newAussenlager = Number(inputQty) || 0;
+    if (newAussenlager <= 0) return;
 
     submit(
       {
-        type: "sync-all-inventory",
-        productId,
-        inventoryItemId,
-        newShopifyQty,
-        newExternalQty,
+        type: "transfer-to-aussenlager",
+        variantId,
+        newAussenlager: String(newAussenlager),
+        currentHauptlager: String(Number(currentHauptlager) || 0),
       },
       { method: "post" },
     );
@@ -634,18 +680,18 @@ export default function Index() {
     return { variants, firstVariant, hasRealVariants, qty };
   };
 
-  // ✅ APPLY FILTERS
+  // APPLY FILTERS — fixed: was referencing undefined `firstVariant`
   const filteredProducts = useMemo(() => {
     return products.filter(({ node }) => {
-      const warehouseQty = Number(node.externalWarehouse) || 0;
+      const { firstVariant } = getRowInfo(node);
+      // warehouseQty now reads from the aussenlager metafield on the variant
+      const warehouseQty = Number(firstVariant?.aussenlager?.value) || 0;
 
       if (filterType === "none") {
         return true;
       } else if (filterType === "lowMain") {
-        // Hauptlager <= Außenlager
         return filterLowMainInventory(node, warehouseQty);
       } else if (filterType === "lowAfterReorder") {
-        // Hauptlager minus Melde <= Aussenlager
         return filterLowAfterReorder(node, warehouseQty);
       }
       return true;
@@ -737,11 +783,17 @@ export default function Index() {
               </Text>
             </div>
 
-            {/* ✅ FILTER DROPDOWN */}
-            <div className="sfdfsdfsd" style={{
-              marginTop: 16, maxWidth: "100%", display: "flex", gap: 8, justifyContent: "space-between",
-              alignItems: "center"
-            }}>
+            {/* FILTER DROPDOWN */}
+            <div
+              style={{
+                marginTop: 16,
+                maxWidth: "100%",
+                display: "flex",
+                gap: 8,
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
               <Select
                 label="Filter"
                 options={[
@@ -758,7 +810,7 @@ export default function Index() {
                 value={filterType}
                 onChange={setFilterType}
               />
-              <Text as="p" variant="bodySm" tone="subdued" style={{ marginTop: 8 }}>
+              <Text as="p" variant="bodySm" tone="subdued">
                 Zeige {filteredProducts.length} von {products.length} Produkten
               </Text>
             </div>
@@ -771,10 +823,15 @@ export default function Index() {
                 <tr>
                   <th style={thStyle}>Artikel</th>
                   <th style={thStyle}>Hersteller</th>
-                  <th style={thStyle}>Hauptlager</th>
+                  {/* Renamed: was "Hauptlager", now shows real Shopify stock */}
+                  <th style={thStyle}>Inventory</th>
                   <th style={thStyle}>Status</th>
+                  {/* New column: shows custom.hauptlager metafield */}
+                  <th style={thStyle}>Hauptlager</th>
+                  {/* Shows custom.aussenlager metafield (live from Shopify) */}
                   <th style={thStyle}>Außenlager</th>
-                  <th style={thStyle}>Aussenlager Neu</th>
+                  {/* Renamed: was "Aussenlager Neu" */}
+                  <th style={thStyle}>Außenlager Neu</th>
                   <th style={thStyle}>Meldebestand (in VKE)</th>
                   <th style={thStyle}>Aktion</th>
                 </tr>
@@ -783,8 +840,10 @@ export default function Index() {
               <tbody>
                 {filteredProducts.length === 0 ? (
                   <tr>
-                    <td colSpan="8" style={{ ...tdStyle, textAlign: "center" }}>
-                      <Text tone="subdued">Keine Produkte entsprechen diesem Filter</Text>
+                    <td colSpan="9" style={{ ...tdStyle, textAlign: "center" }}>
+                      <Text tone="subdued">
+                        Keine Produkte entsprechen diesem Filter
+                      </Text>
                     </td>
                   </tr>
                 ) : (
@@ -792,20 +851,32 @@ export default function Index() {
                     const { variants, firstVariant, hasRealVariants, qty } =
                       getRowInfo(node);
                     const isOpen = openVariantProductId === node.id;
-                    const warehouseQty = Number(node.externalWarehouse) || 0;
                     const reorderLevel = Number(node.reorderLevel) || 0;
                     const canEditRowInventory = !hasRealVariants;
 
-                    // ✅ Stock status badge
+                    // Values from Shopify metafields (always up-to-date via loader)
+                    const aussenlagerValue = !hasRealVariants
+                      ? firstVariant?.aussenlager?.value ?? "—"
+                      : "—";
+                    const hauptlagerValue = !hasRealVariants
+                      ? firstVariant?.hauptlager?.value ?? "—"
+                      : "—";
+                    const currentHauptlager =
+                      Number(firstVariant?.hauptlager?.value) || 0;
+
+                    // Stock status badge
                     const stockStatus = getStockStatus(qty);
-                    const afterReorderQty = qty - reorderLevel;
 
                     return (
                       <Fragment key={node.id}>
-                        <tr style={{
-                          background:
-                            stockStatus.label === "Low" ? "rgba(255, 0, 0, 0.05)" : "transparent"
-                        }}>
+                        <tr
+                          style={{
+                            background:
+                              stockStatus.label === "Niedrig"
+                                ? "rgba(255, 0, 0, 0.05)"
+                                : "transparent",
+                          }}
+                        >
                           <td style={{ ...tdStyle, minWidth: 220 }}>
                             <div>
                               <Text as="p" variant="bodyMd">
@@ -823,25 +894,47 @@ export default function Index() {
                             <Text as="p">{node.vendor || "—"}</Text>
                           </td>
 
-                          <td style={{ ...tdStyle, minWidth: 110, textAlign: "center" }}>
+                          {/* Inventory: real Shopify stock quantity */}
+                          <td
+                            style={{
+                              ...tdStyle,
+                              minWidth: 110,
+                              textAlign: "center",
+                            }}
+                          >
                             <Text as="p">{String(qty)}</Text>
                           </td>
 
-                          {/* ✅ STATUS BADGE */}
+                          {/* Status Badge */}
                           <td style={{ ...tdStyle, minWidth: 100 }}>
                             <Badge tone={stockStatus.tone}>
                               {stockStatus.label}
                             </Badge>
                           </td>
 
+                          {/* Hauptlager: custom.hauptlager metafield */}
                           <td style={{ ...tdStyle, minWidth: 120 }}>
-                             {!hasRealVariants ? (
-    <Text as="p">{node.externalWarehouse || "—"}</Text>
-  ) : (
-    <Text as="p" tone="subdued">—</Text>
-  )}
+                            {!hasRealVariants ? (
+                              <Text as="p">{hauptlagerValue}</Text>
+                            ) : (
+                              <Text as="p" tone="subdued">
+                                —
+                              </Text>
+                            )}
                           </td>
 
+                          {/* Außenlager: custom.aussenlager metafield (read from Shopify) */}
+                          <td style={{ ...tdStyle, minWidth: 120 }}>
+                            {!hasRealVariants ? (
+                              <Text as="p">{aussenlagerValue}</Text>
+                            ) : (
+                              <Text as="p" tone="subdued">
+                                —
+                              </Text>
+                            )}
+                          </td>
+
+                          {/* Außenlager Neu: input that triggers metafield update */}
                           <td style={{ ...tdStyle, minWidth: 180 }}>
                             {!hasRealVariants ? (
                               <InlineEditable
@@ -856,11 +949,10 @@ export default function Index() {
                                 }
                                 onCancelEdit={cancelEdit}
                                 onSave={(v) =>
-                                  transferFromExternalWarehouse(
+                                  transferToAussenlager(
+                                    firstVariant?.id,
+                                    currentHauptlager,
                                     node.id,
-                                    firstVariant?.inventoryItem?.id,
-                                    qty,
-                                    warehouseQty,
                                     v,
                                   )
                                 }
@@ -877,7 +969,11 @@ export default function Index() {
                             {!hasRealVariants ? (
                               <InlineEditable
                                 value={node.reorderLevel || ""}
-                                editing={isEditing("product", node.id, "reorder")}
+                                editing={isEditing(
+                                  "product",
+                                  node.id,
+                                  "reorder",
+                                )}
                                 onStartEdit={() =>
                                   startEdit("product", node.id, "reorder")
                                 }
@@ -902,11 +998,11 @@ export default function Index() {
                                     );
                                   }}
                                 >
-                                  {isOpen ? "Varianten ausblenden" : "Varianten"}
+                                  {isOpen
+                                    ? "Varianten ausblenden"
+                                    : "Varianten"}
                                 </Button>
                               )}
-
-                              
                             </InlineStack>
                           </td>
                         </tr>
@@ -914,7 +1010,7 @@ export default function Index() {
                         {hasRealVariants && isOpen && (
                           <tr>
                             <td
-                              colSpan={8}
+                              colSpan={9}
                               style={{
                                 ...tdStyle,
                                 background: "#f6f6f7",
@@ -935,22 +1031,29 @@ export default function Index() {
                                   <thead>
                                     <tr style={{ background: "#f6f6f7" }}>
                                       <th
-                                        style={{ padding: 8, textAlign: "left" }}
+                                        style={{
+                                          padding: 8,
+                                          textAlign: "left",
+                                        }}
                                       >
                                         Artikel
                                       </th>
                                       <th
-                                        style={{ padding: 8, textAlign: "left" }}
+                                        style={{
+                                          padding: 8,
+                                          textAlign: "left",
+                                        }}
                                       >
-                                        
-Preis
+                                        Preis
                                       </th>
                                       <th
-                                        style={{ padding: 8, textAlign: "left" }}
+                                        style={{
+                                          padding: 8,
+                                          textAlign: "left",
+                                        }}
                                       >
-                                        Hauptlager
+                                        Inventory
                                       </th>
-                                      
                                     </tr>
                                   </thead>
 
@@ -977,9 +1080,9 @@ Preis
                                         </td>
 
                                         <td style={{ padding: 8 }}>
-                                           <Text as="p">
-    {vr.price ? `€${vr.price}` : "—"}
-  </Text>
+                                          <Text as="p">
+                                            {vr.price ? `€${vr.price}` : "—"}
+                                          </Text>
                                         </td>
 
                                         <td style={{ padding: 8 }}>
@@ -1045,7 +1148,7 @@ Preis
             </Button>
 
             <Text as="p" variant="bodySm" tone="subdued">
-              Seite{cursorStack.length + 1}
+              Seite {cursorStack.length + 1}
             </Text>
 
             <Button
