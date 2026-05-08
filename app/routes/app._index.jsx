@@ -100,10 +100,10 @@ export const loader = async ({ request }) => {
 
   const qParam = url.searchParams.get("q") || "";
   const after = url.searchParams.get("after") || null;
+  const limitParam = parseInt(url.searchParams.get("limit") || "10", 10);
+  const PAGE_SIZE = [10, 20, 30, 50].includes(limitParam) ? limitParam : 10;
 
   const query = buildProductsQuery(qParam);
-
-  const PAGE_SIZE = 10;
 
   const res = await admin.graphql(
     `query Products($first: Int!, $after: String, $query: String) {
@@ -183,38 +183,21 @@ export const loader = async ({ request }) => {
     warehouses.map((w) => [w.productId, w.reorder]),
   );
 
- const productsWithWarehouse = data.data.products.edges
-  .map((edge) => ({
+  const productsWithWarehouse = data.data.products.edges.map((edge) => ({
     ...edge,
     node: {
       ...edge.node,
       externalWarehouse: warehouseMap[edge.node.id] || "",
       reorderLevel: reorderMap[edge.node.id] || "",
     },
-  }))
-  .sort((a, b) => {
-    const aVariant = a.node.variants.edges[0]?.node;
-    const bVariant = b.node.variants.edges[0]?.node;
-
-    const aAussenlager =
-      Number(aVariant?.aussenlager?.value) || 0;
-
-    const bAussenlager =
-      Number(bVariant?.aussenlager?.value) || 0;
-
-    // Products with aussenlager > 0 come first
-    if (aAussenlager > 0 && bAussenlager <= 0) return -1;
-    if (aAussenlager <= 0 && bAussenlager > 0) return 1;
-
-    // Higher aussenlager first
-    return bAussenlager - aAussenlager;
-  });
+  }));
 
   return json({
     products: productsWithWarehouse,
     pageInfo: data.data.products.pageInfo,
     q: qParam,
     after,
+    limit: PAGE_SIZE,
   });
 };
 
@@ -611,7 +594,7 @@ function InlineEditable({
    MAIN COMPONENT (With Filters)
 ======================= */
 export default function Index() {
-  const { products, pageInfo, q, after } = useLoaderData();
+  const { products, pageInfo, q, after, limit } = useLoaderData();
   const navigate = useNavigate();
   const submit = useSubmit();
 
@@ -639,10 +622,12 @@ export default function Index() {
     setCursorStack([]);
   }, [q]);
 
-  const buildUrl = ({ q, after }) => {
+  const buildUrl = ({ q, after, limit: lim }) => {
     const sp = new URLSearchParams();
     if (q) sp.set("q", q);
     if (after) sp.set("after", after);
+    // always persist page-size so pagination keeps the chosen value
+    sp.set("limit", String(lim ?? limit));
     return `?${sp.toString()}`;
   };
 
@@ -732,6 +717,15 @@ export default function Index() {
       }
     }
 
+    // Sort variants: those with an Außenlager value come first
+    variants = [...variants].sort((a, b) => {
+      const aVal = Number(a.aussenlager?.value) || 0;
+      const bVal = Number(b.aussenlager?.value) || 0;
+      if (bVal > 0 && aVal === 0) return 1;
+      if (aVal > 0 && bVal === 0) return -1;
+      return 0;
+    });
+
     const firstVariant = variants[0];
 
     const hasRealVariants =
@@ -744,11 +738,10 @@ export default function Index() {
     return { variants, firstVariant, hasRealVariants, qty };
   };
 
-  // APPLY FILTERS — fixed: was referencing undefined `firstVariant`
+  // APPLY FILTERS + sort: products with Außenlager value float to top
   const filteredProducts = useMemo(() => {
-    return products.filter(({ node }) => {
+    const filtered = products.filter(({ node }) => {
       const { firstVariant } = getRowInfo(node);
-      // aussenlager and melde read directly from Shopify variant metafields
       const warehouseQty = Number(firstVariant?.aussenlager?.value) || 0;
       const hauptlagerQty = Number(firstVariant?.hauptlager?.value) || 0;
       const meldeQty = Number(firstVariant?.melde?.value) || 0;
@@ -756,12 +749,20 @@ export default function Index() {
       if (filterType === "none") {
         return true;
       } else if (filterType === "lowMain") {
-        // Red zone: hauptlager <= melde (reorder point breached)
         return filterLowMainInventory(hauptlagerQty, meldeQty);
       } else if (filterType === "lowAfterReorder") {
         return filterLowAfterReorder(node, warehouseQty);
       }
       return true;
+    });
+
+    // Sort: products that have an Außenlager value bubble to the top
+    return [...filtered].sort((a, b) => {
+      const { firstVariant: fvA } = getRowInfo(a.node);
+      const { firstVariant: fvB } = getRowInfo(b.node);
+      const aHas = Number(fvA?.aussenlager?.value) > 0 ? 1 : 0;
+      const bHas = Number(fvB?.aussenlager?.value) > 0 ? 1 : 0;
+      return bHas - aHas; // products with Außenlager first
     });
   }, [products, filterType]);
 
@@ -824,7 +825,9 @@ export default function Index() {
               <InlineStack gap="200">
                 <Button
                   variant="primary"
-                  onClick={() => navigate(buildUrl({ q: search.trim() || "" }))}
+                  onClick={() =>
+                    navigate(buildUrl({ q: search.trim() || "" }))
+                  }
                 >
                   Suchen
                 </Button>
@@ -850,36 +853,63 @@ export default function Index() {
               </Text>
             </div>
 
-            {/* FILTER DROPDOWN */}
+            {/* FILTER + PAGE SIZE ROW */}
             <div
               style={{
                 marginTop: 16,
                 maxWidth: "100%",
                 display: "flex",
-                gap: 8,
+                gap: 16,
                 justifyContent: "space-between",
-                alignItems: "center",
+                alignItems: "flex-end",
+                flexWrap: "wrap",
               }}
             >
-              <Select
-                label="Filter"
-                options={[
-                  { label: "Kein Filter", value: "none" },
-                  {
-                    label: "🔴 Nur Hauptlager <= Meldebestand",
-                    value: "lowMain",
-                  },
-                  {
-                    label: "🟠 Hauptlager minus Melde <= Aussenlager",
-                    value: "lowAfterReorder",
-                  },
-                ]}
-                value={filterType}
-                onChange={setFilterType}
-              />
-              <Text as="p" variant="bodySm" tone="subdued">
-                Zeige {filteredProducts.length} von {products.length} Produkten
-              </Text>
+              {/* Left: filter + page-size selectors */}
+              <InlineStack gap="400" blockAlign="end">
+                <Select
+                  label="Filter"
+                  options={[
+                    { label: "Kein Filter", value: "none" },
+                    {
+                      label: "🔴 Nur Hauptlager <= Meldebestand",
+                      value: "lowMain",
+                    },
+                    {
+                      label: "🟠 Hauptlager minus Melde <= Aussenlager",
+                      value: "lowAfterReorder",
+                    },
+                  ]}
+                  value={filterType}
+                  onChange={setFilterType}
+                />
+
+                <Select
+                  label="Produkte pro Seite"
+                  options={[
+                    { label: "10", value: "10" },
+                    { label: "20", value: "20" },
+                    { label: "30", value: "30" },
+                    { label: "50", value: "50" },
+                  ]}
+                  value={String(limit)}
+                  onChange={(val) => {
+                    // Reset to first page whenever page size changes
+                    setCursorStack([]);
+                    navigate(buildUrl({ q: q || "", limit: val }));
+                  }}
+                />
+              </InlineStack>
+
+              {/* Right: count + sort note */}
+              <div style={{ textAlign: "right" }}>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Zeige {filteredProducts.length} von {products.length} Produkten
+                </Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  ↑ Produkte mit Außenlager werden zuerst angezeigt
+                </Text>
+              </div>
             </div>
           </div>
 
@@ -1215,11 +1245,8 @@ export default function Index() {
               disabled={cursorStack.length === 0}
               onClick={() => {
                 cancelEdit();
-
                 const prev = cursorStack[cursorStack.length - 1];
-
                 setCursorStack((s) => s.slice(0, -1));
-
                 navigate(buildUrl({ q: q || "", after: prev || "" }));
               }}
             >
@@ -1227,7 +1254,7 @@ export default function Index() {
             </Button>
 
             <Text as="p" variant="bodySm" tone="subdued">
-              Seite {cursorStack.length + 1}
+              Seite {cursorStack.length + 1} · {limit} pro Seite
             </Text>
 
             <Button
@@ -1235,9 +1262,7 @@ export default function Index() {
               variant="primary"
               onClick={() => {
                 cancelEdit();
-
                 setCursorStack((s) => [...s, after]);
-
                 navigate(buildUrl({ q: q || "", after: lastCursor }));
               }}
             >
