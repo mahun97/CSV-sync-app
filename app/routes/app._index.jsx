@@ -326,6 +326,7 @@ export const action = async ({ request }) => {
 
       const available = quantities.find((q) => q.name === "available")?.quantity || 0;
       const committed = quantities.find((q) => q.name === "committed")?.quantity || 0;
+      console.log("On-hand fetched for variant", variantId, { available, committed });
 
       // available + committed = on hand (what Shopify physically has)
       newHauptlager = available + committed;
