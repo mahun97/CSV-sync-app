@@ -63,15 +63,17 @@ const getStockStatus = (qty) => {
 
 /* =======================
    FILTER LOGIC
+   Filter 1: Hauptlager <= Außenlager
+   Filter 2: Hauptlager - Melde <= Außenlager
 ======================= */
-const filterLowMainInventory = (hauptlagerQty, meldeQty) =>
-  hauptlagerQty <= meldeQty;
 
-const filterLowAfterReorder = (node, warehouseQty) => {
-  const mainQty = Number(node.totalInventory) || 0;
-  const reorderLevel = Number(node.reorderLevel) || 0;
-  return mainQty - reorderLevel <= warehouseQty;
-};
+// Filter 1: show product when main stock <= outside stock
+const filterLowMainInventory = (hauptlagerQty, aussenlagerQty) =>
+  hauptlagerQty <= aussenlagerQty;
+
+// Filter 2: show product when (main stock - reorder threshold) <= outside stock
+const filterLowAfterReorder = (hauptlagerQty, meldeQty, aussenlagerQty) =>
+  hauptlagerQty - meldeQty <= aussenlagerQty;
 
 /* helper: sum aussenlager across all variants of one product edge */
 const edgeTotalAussenlager = (edge) =>
@@ -81,23 +83,22 @@ const edgeTotalAussenlager = (edge) =>
   );
 
 /* =======================
-   LOADER — fetches ALL products, filters aussenlager > 0, paginates by page number
+   LOADER
 ======================= */
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
   const url = new URL(request.url);
 
-  const qParam   = url.searchParams.get("q") || "";
-  const page     = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
+  const qParam     = url.searchParams.get("q") || "";
+  const page       = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
   const limitParam = parseInt(url.searchParams.get("limit") || "10", 10);
   const PAGE_SIZE  = [10, 20, 30, 50].includes(limitParam) ? limitParam : 10;
 
   const query = buildProductsQuery(qParam);
 
-  // ── Fetch ALL products in batches of 250 (Shopify max) ──────────────
-  let allEdges   = [];
-  let hasMore    = true;
+  let allEdges    = [];
+  let hasMore     = true;
   let afterCursor = null;
 
   while (hasMore) {
@@ -151,11 +152,9 @@ export const loader = async ({ request }) => {
     hasMore     = data.data.products.pageInfo.hasNextPage;
     afterCursor = edges.length > 0 ? edges[edges.length - 1].cursor : null;
 
-    // Safety cap — stop at 5 000 products
     if (allEdges.length >= 5000) break;
   }
 
-  // ── Attach DB warehouse / reorder data ──────────────────────────────
   const productIds = allEdges.map((e) => e.node.id);
 
   const warehouses = await db.externalWarehouse.findMany({
@@ -174,14 +173,13 @@ export const loader = async ({ request }) => {
     },
   }));
 
-  // ── Server-side filter: only products where at least one variant has aussenlager > 0 ──
+  // Only products where at least one variant has aussenlager > 0
   const withAussenlager = allProducts.filter((edge) => edgeTotalAussenlager(edge) > 0);
 
-  // ── Page-number pagination on the filtered set ───────────────────────
-  const totalCount = withAussenlager.length;
-  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
-  const safePage   = Math.min(page, totalPages);
-  const startIdx   = (safePage - 1) * PAGE_SIZE;
+  const totalCount   = withAussenlager.length;
+  const totalPages   = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const safePage     = Math.min(page, totalPages);
+  const startIdx     = (safePage - 1) * PAGE_SIZE;
   const pageProducts = withAussenlager.slice(startIdx, startIdx + PAGE_SIZE);
 
   return json({
@@ -290,12 +288,11 @@ export const action = async ({ request }) => {
     return json({ success: true });
   }
 
-  // custom.aussenlager = newAussenlager  |  custom.hauptlager = shopifyInventory - newAussenlager
   if (type === "transfer-to-aussenlager") {
-    const variantId       = form.get("variantId");
-    const newAussenlager  = parseInt(form.get("newAussenlager"),  10) || 0;
+    const variantId        = form.get("variantId");
+    const newAussenlager   = parseInt(form.get("newAussenlager"),   10) || 0;
     const shopifyInventory = parseInt(form.get("shopifyInventory"), 10) || 0;
-    const newHauptlager   = shopifyInventory - newAussenlager;
+    const newHauptlager    = shopifyInventory - newAussenlager;
 
     const result = await admin.graphql(
       `mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
@@ -319,7 +316,6 @@ export const action = async ({ request }) => {
     return json({ success: true });
   }
 
-  // custom.melde metafield update
   if (type === "update-melde") {
     const variantId = form.get("variantId");
     const melde     = form.get("melde");
@@ -436,7 +432,14 @@ function InlineEditable({ value, onSave, type = "text", editing, onStartEdit, on
   if (editing) {
     return (
       <div style={{ minWidth: 110 }}>
-        <TextField value={val} onChange={setVal} onBlur={handleSave} autoFocus type={type} onKeyDown={handleKeyDown} />
+        <TextField
+          value={val}
+          onChange={setVal}
+          onBlur={handleSave}
+          autoFocus
+          type={type}
+          onKeyDown={handleKeyDown}
+        />
       </div>
     );
   }
@@ -464,22 +467,21 @@ function InlineEditable({ value, onSave, type = "text", editing, onStartEdit, on
 ======================= */
 export default function Index() {
   const { products, totalCount, totalPages, currentPage, q, limit } = useLoaderData();
-  const navigate  = useNavigate();
-  const submit    = useSubmit();
+  const navigate   = useNavigate();
+  const submit     = useSubmit();
   const navigation = useNavigation();
 
   const isPageLoading =
     navigation.state === "loading" || navigation.state === "submitting";
 
   const [openVariantProductId, setOpenVariantProductId] = useState(null);
-  const [editingCell,   setEditingCell]   = useState(null);
+  const [editingCell,    setEditingCell]    = useState(null);
   const [tempWarehouse2, setTempWarehouse2] = useState({});
-  const [filterType,    setFilterType]    = useState("none");
-  const [search,        setSearch]        = useState(q || "");
+  const [filterType,     setFilterType]     = useState("none");
+  const [search,         setSearch]         = useState(q || "");
 
   useEffect(() => setSearch(q || ""), [q]);
 
-  /* Build URL — page number based */
   const buildUrl = ({ q: qVal, page: pg, limit: lim }) => {
     const sp = new URLSearchParams();
     if (qVal) sp.set("q", qVal);
@@ -488,9 +490,9 @@ export default function Index() {
     return `?${sp.toString()}`;
   };
 
-  const isEditing = (scope, id, field) =>
+  const isEditing  = (scope, id, field) =>
     editingCell?.scope === scope && editingCell?.id === id && editingCell?.field === field;
-  const startEdit = (scope, id, field) => setEditingCell({ scope, id, field });
+  const startEdit  = (scope, id, field) => setEditingCell({ scope, id, field });
   const cancelEdit = () => setEditingCell(null);
 
   const saveInventoryByInventoryItem = (inventoryItemId, quantity) =>
@@ -520,7 +522,9 @@ export default function Index() {
     if (q && !q.includes(":")) {
       const searchLower = q.toLowerCase();
       const filtered = variants.filter(
-        (v) => v.sku?.toLowerCase().includes(searchLower) || v.id?.toLowerCase().includes(searchLower),
+        (v) =>
+          v.sku?.toLowerCase().includes(searchLower) ||
+          v.id?.toLowerCase().includes(searchLower),
       );
       if (filtered.length > 0) variants = filtered;
     }
@@ -543,82 +547,77 @@ export default function Index() {
     return { variants, firstVariant, hasRealVariants, qty, totalAussenlager, totalHauptlager };
   };
 
-  /* Client-side dropdown filter on top of the server-side baseline */
+  /* =======================
+     CLIENT-SIDE FILTER
+     ── "none"            : show all (server guarantees aussenlager > 0)
+     ── "lowMain"         : Hauptlager <= Außenlager
+     ── "lowAfterReorder" : Hauptlager - Melde <= Außenlager
+     For multi-variant: aggregate all variant metafield values
+  ======================= */
   const filteredProducts = useMemo(() => {
-  return products.filter(({ node }) => {
-    const {
-      variants,
-      firstVariant,
-      hasRealVariants,
-      totalAussenlager,
-      totalHauptlager,
-    } = getRowInfo(node);
+    return products.filter(({ node }) => {
+      const { variants, firstVariant, hasRealVariants, totalAussenlager, totalHauptlager } =
+        getRowInfo(node);
 
-    // already required
-    if (totalAussenlager <= 0) return false;
+      // Guard: no aussenlager means skip
+      if (totalAussenlager <= 0) return false;
 
-    // =========================
-    // DEFAULT = NO FILTER
-    // =========================
-    if (filterType === "none") {
-      return true;
-    }
+      // No filter — show everything
+      if (filterType === "none") return true;
 
-    // =========================
-    // SINGLE PRODUCT
-    // =========================
-    if (!hasRealVariants) {
-      const hauptlagerQty =
-        Number(firstVariant?.hauptlager?.value) ||
-        (
+      if (!hasRealVariants) {
+        // ── Single-variant ──
+        const hauptlagerQty =
+          Number(firstVariant?.hauptlager?.value) ||
           (Number(firstVariant?.inventoryQuantity) || 0) -
-          (Number(firstVariant?.aussenlager?.value) || 0)
+            (Number(firstVariant?.aussenlager?.value) || 0);
+
+        const meldeQty       = Number(firstVariant?.melde?.value)       || 0;
+        const aussenlagerQty = Number(firstVariant?.aussenlager?.value) || 0;
+
+        if (filterType === "lowMain")
+          // 🔴 Hauptlager <= Außenlager
+          return filterLowMainInventory(hauptlagerQty, aussenlagerQty);
+
+        if (filterType === "lowAfterReorder")
+          // 🟠 Hauptlager - Melde <= Außenlager
+          return filterLowAfterReorder(hauptlagerQty, meldeQty, aussenlagerQty);
+
+      } else {
+        // ── Multi-variant: sum across all variants ──
+        const totalMelde = variants.reduce(
+          (sum, v) => sum + (Number(v.melde?.value) || 0), 0,
         );
 
-      const meldeQty =
-        Number(firstVariant?.melde?.value) || 0;
+        if (filterType === "lowMain")
+          return filterLowMainInventory(totalHauptlager, totalAussenlager);
 
-      const warehouseQty =
-        Number(firstVariant?.aussenlager?.value) || 0;
-
-      if (filterType === "lowMain") {
-        return hauptlagerQty <= meldeQty;
-      }
-
-      if (filterType === "lowAfterReorder") {
-        return hauptlagerQty - meldeQty <= warehouseQty;
+        if (filterType === "lowAfterReorder")
+          return filterLowAfterReorder(totalHauptlager, totalMelde, totalAussenlager);
       }
 
       return true;
-    }
-
-    // =========================
-    // VARIANT PRODUCTS
-    // =========================
-
-    // total melde from all variants
-    const totalMelde = variants.reduce(
-      (sum, v) => sum + (Number(v.melde?.value) || 0),
-      0
-    );
-
-    if (filterType === "lowMain") {
-      return totalHauptlager <= totalMelde;
-    }
-
-    if (filterType === "lowAfterReorder") {
-      return totalHauptlager - totalMelde <= totalAussenlager;
-    }
-
-    return true;
-  });
-}, [products, filterType]);
+    });
+  }, [products, filterType]);
 
   return (
     <>
       {isPageLoading && (
-        <div style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
-          <div style={{ background: "#fff", padding: "40px 60px", borderRadius: 16, boxShadow: "0 10px 30px rgba(0,0,0,0.2)", textAlign: "center" }}>
+        <div
+          style={{
+            position: "fixed", top: 0, left: 0,
+            width: "100vw", height: "100vh",
+            background: "rgba(0,0,0,0.4)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 9999,
+          }}
+        >
+          <div
+            style={{
+              background: "#fff", padding: "40px 60px", borderRadius: 16,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.2)", textAlign: "center",
+            }}
+          >
             <Spinner size="large" />
             <div style={{ marginTop: 16, fontSize: 16, fontWeight: 500 }}>Bitte warten...</div>
           </div>
@@ -632,22 +631,30 @@ export default function Index() {
             <InlineStack gap="300" align="space-between">
               <div style={{ flex: 1, minWidth: 280 }}>
                 <TextField
-                  label="Search" labelHidden
+                  label="Search"
+                  labelHidden
                   placeholder='Suchen... (z.B. "Nike" oder "sku:ABC123")'
                   value={search}
                   onChange={setSearch}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") navigate(buildUrl({ q: search.trim() || "", page: 1 }));
+                    if (e.key === "Enter")
+                      navigate(buildUrl({ q: search.trim() || "", page: 1 }));
                   }}
                   clearButton
                   onClearButtonClick={() => navigate(buildUrl({ q: "", page: 1 }))}
                 />
               </div>
               <InlineStack gap="200">
-                <Button variant="primary" onClick={() => navigate(buildUrl({ q: search.trim() || "", page: 1 }))}>
+                <Button
+                  variant="primary"
+                  onClick={() => navigate(buildUrl({ q: search.trim() || "", page: 1 }))}
+                >
                   Suchen
                 </Button>
-                <Button disabled={!q} onClick={() => navigate(buildUrl({ q: "", page: 1 }))}>
+                <Button
+                  disabled={!q}
+                  onClick={() => navigate(buildUrl({ q: "", page: 1 }))}
+                >
                   Zurücksetzen
                 </Button>
               </InlineStack>
@@ -660,18 +667,26 @@ export default function Index() {
               </Text>
             </div>
 
-            <div style={{ marginTop: 16, display: "flex", gap: 16, justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap" }}>
+            <div
+              style={{
+                marginTop: 16, display: "flex", gap: 16,
+                justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap",
+              }}
+            >
               <InlineStack gap="400" blockAlign="end">
+                {/* ── FILTER SELECT (label + logic fixed) ── */}
                 <Select
                   label="Filter"
                   options={[
-                    { label: "Kein Filter", value: "none" },
-                    { label: "🔴 Nur Hauptlager <= Meldebestand",    value: "lowMain" },
-                    { label: "🟠 Hauptlager minus Melde <= Aussenlager", value: "lowAfterReorder" },
+                    { label: "Kein Filter",                                   value: "none" },
+                    { label: "🔴 Nur Hauptlager <= Außenlager",               value: "lowMain" },
+                    { label: "🟠 Hauptlager minus Melde <= Außenlager",       value: "lowAfterReorder" },
                   ]}
                   value={filterType}
                   onChange={setFilterType}
                 />
+
+                {/* ── PER-PAGE SELECT (resets client filter on change) ── */}
                 <Select
                   label="Produkte pro Seite"
                   options={[
@@ -681,12 +696,19 @@ export default function Index() {
                     { label: "50", value: "50" },
                   ]}
                   value={String(limit)}
-                  onChange={(val) => navigate(buildUrl({ q: q || "", page: 1, limit: val }))}
+                  onChange={(val) => {
+                    setFilterType("none"); // reset client filter so full page is visible
+                    navigate(buildUrl({ q: q || "", page: 1, limit: val }));
+                  }}
                 />
               </InlineStack>
+
               <div style={{ textAlign: "right" }}>
                 <Text as="p" variant="bodySm" tone="subdued">
-                  {totalCount} Produkte mit Außenlager · Seite {currentPage} / {totalPages}
+                  {filterType === "none"
+                    ? `${totalCount} Produkte mit Außenlager`
+                    : `${filteredProducts.length} von ${totalCount} Produkten (gefiltert)`}
+                  {" "}· Seite {currentPage} / {totalPages}
                 </Text>
               </div>
             </div>
@@ -700,7 +722,6 @@ export default function Index() {
                   <th style={thStyle}>Artikel</th>
                   <th style={thStyle}>Hersteller</th>
                   <th style={thStyle}>Inventar</th>
-                  {/* <th style={thStyle}>Status</th> */}
                   <th style={thStyle}>Hauptlager</th>
                   <th style={thStyle}>Außenlager</th>
                   <th style={thStyle}>Außenlager Neu</th>
@@ -712,7 +733,7 @@ export default function Index() {
               <tbody>
                 {filteredProducts.length === 0 ? (
                   <tr>
-                    <td colSpan="9" style={{ ...tdStyle, textAlign: "center" }}>
+                    <td colSpan="8" style={{ ...tdStyle, textAlign: "center" }}>
                       <Text tone="subdued">Keine Produkte entsprechen diesem Filter</Text>
                     </td>
                   </tr>
@@ -730,35 +751,41 @@ export default function Index() {
                       : firstVariant?.aussenlager?.value ?? "—";
 
                     const hauptlagerValue = hasRealVariants
-  ? totalHauptlager > 0 ? String(totalHauptlager) : "—"
-  : firstVariant?.hauptlager?.value
-    ? firstVariant.hauptlager.value
-    : String(
-        (Number(firstVariant?.inventoryQuantity) || 0) -
-        (Number(firstVariant?.aussenlager?.value) || 0)
-      );
+                      ? totalHauptlager > 0 ? String(totalHauptlager) : "—"
+                      : firstVariant?.hauptlager?.value
+                        ? firstVariant.hauptlager.value
+                        : String(
+                            (Number(firstVariant?.inventoryQuantity) || 0) -
+                            (Number(firstVariant?.aussenlager?.value) || 0),
+                          );
 
-                   const currentHauptlager = hasRealVariants
-  ? totalHauptlager
-  : Number(firstVariant?.hauptlager?.value) ||
-    ((Number(firstVariant?.inventoryQuantity) || 0) - (Number(firstVariant?.aussenlager?.value) || 0));
+                    const currentHauptlager = hasRealVariants
+                      ? totalHauptlager
+                      : Number(firstVariant?.hauptlager?.value) ||
+                        (Number(firstVariant?.inventoryQuantity) || 0) -
+                          (Number(firstVariant?.aussenlager?.value) || 0);
 
                     const meldeValue = !hasRealVariants
                       ? firstVariant?.melde?.value ?? "—"
                       : "—";
                     const meldeQty = Number(firstVariant?.melde?.value) || 0;
 
-                    const isRedZone = !hasRealVariants && currentHauptlager <= meldeQty && meldeQty > 0;
+                    const isRedZone =
+                      !hasRealVariants && currentHauptlager <= meldeQty && meldeQty > 0;
+
                     const stockStatus = getStockStatus(qty);
 
                     return (
                       <Fragment key={node.id}>
                         <tr style={{ background: isRedZone ? "rgba(255,0,0,0.08)" : "transparent" }}>
+
                           {/* Artikel */}
                           <td style={{ ...tdStyle, minWidth: 220 }}>
                             <Text as="p" variant="bodyMd">{node.title}</Text>
                             {firstVariant?.sku && (
-                              <Text as="p" variant="bodySm" tone="subdued">SKU: {firstVariant.sku}</Text>
+                              <Text as="p" variant="bodySm" tone="subdued">
+                                SKU: {firstVariant.sku}
+                              </Text>
                             )}
                           </td>
 
@@ -771,11 +798,6 @@ export default function Index() {
                           <td style={{ ...tdStyle, minWidth: 90, textAlign: "center" }}>
                             <Text as="p">{String(qty)}</Text>
                           </td>
-
-                          {/* Status */}
-                          {/* <td style={{ ...tdStyle, minWidth: 100 }}>
-                            <Badge tone={stockStatus.tone}>{stockStatus.label}</Badge>
-                          </td> */}
 
                           {/* Hauptlager */}
                           <td style={{ ...tdStyle, minWidth: 110 }}>
@@ -795,7 +817,9 @@ export default function Index() {
                                 editing={isEditing("product", node.id, "warehouse2")}
                                 onStartEdit={() => startEdit("product", node.id, "warehouse2")}
                                 onCancelEdit={cancelEdit}
-                                onSave={(v) => transferToAussenlager(firstVariant?.id, qty, node.id, v)}
+                                onSave={(v) =>
+                                  transferToAussenlager(firstVariant?.id, qty, node.id, v)
+                                }
                                 type="number"
                               />
                             ) : (
@@ -843,7 +867,10 @@ export default function Index() {
                         {/* Variant sub-table */}
                         {hasRealVariants && isOpen && (
                           <tr>
-                            <td colSpan={9} style={{ ...tdStyle, background: "#f6f6f7", paddingLeft: 40 }}>
+                            <td
+                              colSpan={8}
+                              style={{ ...tdStyle, background: "#f6f6f7", paddingLeft: 40 }}
+                            >
                               <Text variant="headingSm" as="p">Varianten</Text>
                               <div style={{ marginTop: 10 }}>
                                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -864,7 +891,11 @@ export default function Index() {
                                         <tr key={vr.id} style={{ borderTop: "1px solid #e1e3e5" }}>
                                           <td style={{ padding: 8, width: 220 }}>
                                             <strong>{vr.title}</strong>
-                                            {vr.sku && <div style={{ fontSize: 12, opacity: 0.7 }}>SKU: {vr.sku}</div>}
+                                            {vr.sku && (
+                                              <div style={{ fontSize: 12, opacity: 0.7 }}>
+                                                SKU: {vr.sku}
+                                              </div>
+                                            )}
                                           </td>
                                           <td style={{ padding: 8 }}>
                                             <Text as="p">{vr.price ? `€${vr.price}` : "—"}</Text>
@@ -873,9 +904,13 @@ export default function Index() {
                                             <InlineEditable
                                               value={String(vr.inventoryQuantity ?? "")}
                                               editing={isEditing("variant", vr.id, "inventory")}
-                                              onStartEdit={() => startEdit("variant", vr.id, "inventory")}
+                                              onStartEdit={() =>
+                                                startEdit("variant", vr.id, "inventory")
+                                              }
                                               onCancelEdit={cancelEdit}
-                                              onSave={(v) => saveInventoryByInventoryItem(vr.inventoryItem?.id, v)}
+                                              onSave={(v) =>
+                                                saveInventoryByInventoryItem(vr.inventoryItem?.id, v)
+                                              }
                                               type="number"
                                             />
                                           </td>
@@ -889,7 +924,9 @@ export default function Index() {
                                             <InlineEditable
                                               value={vr.melde?.value ?? ""}
                                               editing={isEditing("variant", vr.id, "melde")}
-                                              onStartEdit={() => startEdit("variant", vr.id, "melde")}
+                                              onStartEdit={() =>
+                                                startEdit("variant", vr.id, "melde")
+                                              }
                                               onCancelEdit={cancelEdit}
                                               onSave={(v) => saveMelde(vr.id, v)}
                                               type="number"
@@ -913,11 +950,14 @@ export default function Index() {
 
           <br />
 
-          {/* ── PAGINATION — page numbers ── */}
+          {/* ── PAGINATION ── */}
           <InlineStack align="space-between" gap="300">
             <Button
               disabled={currentPage <= 1}
-              onClick={() => { cancelEdit(); navigate(buildUrl({ q: q || "", page: currentPage - 1 })); }}
+              onClick={() => {
+                cancelEdit();
+                navigate(buildUrl({ q: q || "", page: currentPage - 1 }));
+              }}
             >
               Vorherige
             </Button>
@@ -929,7 +969,10 @@ export default function Index() {
             <Button
               disabled={currentPage >= totalPages}
               variant="primary"
-              onClick={() => { cancelEdit(); navigate(buildUrl({ q: q || "", page: currentPage + 1 })); }}
+              onClick={() => {
+                cancelEdit();
+                navigate(buildUrl({ q: q || "", page: currentPage + 1 }));
+              }}
             >
               Nächste
             </Button>
@@ -939,6 +982,3 @@ export default function Index() {
     </>
   );
 }
-
-
-
