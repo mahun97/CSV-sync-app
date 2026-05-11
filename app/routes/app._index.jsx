@@ -63,8 +63,6 @@ const getStockStatus = (qty) => {
 
 /* =======================
    FILTER LOGIC
-   Filter 1: Hauptlager <= Außenlager
-   Filter 2: Hauptlager - Melde <= Außenlager
 ======================= */
 const filterLowMainInventory = (hauptlagerQty, aussenlagerQty) =>
   hauptlagerQty <= aussenlagerQty;
@@ -72,7 +70,6 @@ const filterLowMainInventory = (hauptlagerQty, aussenlagerQty) =>
 const filterLowAfterReorder = (hauptlagerQty, meldeQty, aussenlagerQty) =>
   hauptlagerQty - meldeQty <= aussenlagerQty;
 
-/* helper: sum aussenlager across all variants of one product edge */
 const edgeTotalAussenlager = (edge) =>
   (edge.node.variants?.edges || []).reduce(
     (sum, ve) => sum + (Number(ve.node?.aussenlager?.value) || 0),
@@ -85,7 +82,7 @@ const edgeTotalAussenlager = (edge) =>
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
-  const url = new URL(request.url);
+  const url  = new URL(request.url);
 
   const qParam     = url.searchParams.get("q") || "";
   const page       = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
@@ -129,7 +126,19 @@ export const loader = async ({ request }) => {
                     hauptlager:  metafield(namespace: "custom", key: "hauptlager")  { value }
                     melde:       metafield(namespace: "custom", key: "melde")       { value }
 
-                    inventoryItem { id }
+                    inventoryItem {
+                      id
+                      inventoryLevels(first: 1) {
+                        edges {
+                          node {
+                            quantities(names: ["available", "committed"]) {
+                              name
+                              quantity
+                            }
+                          }
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -152,6 +161,73 @@ export const loader = async ({ request }) => {
     if (allEdges.length >= 5000) break;
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // AUTO-CORRECT HAUPTLAGER
+  // For every variant where hauptlager metafield is set but <= 0,
+  // fetch real on-hand (available + committed) and write it back.
+  // Runs on every page load / reload automatically.
+  // Also fixes direct Shopify admin metafield edits on next refresh.
+  // ─────────────────────────────────────────────────────────────────────
+  const correctionPromises = [];
+
+  for (const edge of allEdges) {
+    for (const variantEdge of edge.node.variants.edges) {
+      const variant = variantEdge.node;
+
+      // Only correct if hauptlager is explicitly set and is 0 or negative
+      const rawHauptlager = variant.hauptlager?.value;
+      if (rawHauptlager === null || rawHauptlager === undefined) continue;
+
+      const hauptlagerNum = Number(rawHauptlager);
+      if (hauptlagerNum > 0) continue; // already fine
+
+      // Get available + committed from the already-fetched inventory levels
+      const quantities =
+        variant.inventoryItem?.inventoryLevels?.edges[0]?.node?.quantities || [];
+      const available = quantities.find((q) => q.name === "available")?.quantity || 0;
+      const committed = quantities.find((q) => q.name === "committed")?.quantity || 0;
+      const onHand    = available + committed;
+
+      // Only update if on-hand is actually different from current hauptlager
+      if (onHand === hauptlagerNum) continue;
+
+      // Mutate metafield + patch in-memory so the page renders correct value immediately
+      correctionPromises.push(
+        admin.graphql(
+          `mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+            metafieldsSet(metafields: $metafields) {
+              userErrors { field message }
+            }
+          }`,
+          {
+            variables: {
+              metafields: [{
+                ownerId:   variant.id,
+                namespace: "custom",
+                key:       "hauptlager",
+                value:     String(onHand),
+                type:      "number_integer",
+              }],
+            },
+          },
+        ).then(async (mutRes) => {
+          const mutData = await mutRes.json();
+          const errors  = mutData.data?.metafieldsSet?.userErrors;
+          if (!errors?.length) {
+            // Patch in-memory so loader returns fresh value without extra refetch
+            variant.hauptlager = { value: String(onHand) };
+          }
+        }),
+      );
+    }
+  }
+
+  // Run all corrections in parallel before responding
+  if (correctionPromises.length > 0) {
+    await Promise.all(correctionPromises);
+  }
+
+  // ── Attach DB warehouse / reorder data ──────────────────────────────
   const productIds = allEdges.map((e) => e.node.id);
 
   const warehouses = await db.externalWarehouse.findMany({
@@ -286,22 +362,15 @@ export const action = async ({ request }) => {
 
   // ─────────────────────────────────────────────────────────────────────
   // TRANSFER TO AUSSENLAGER
-  //
-  // Normal:   hauptlager = shopifyInventory - newAussenlager
-  //
-  // If that result is 0 or negative:
-  //   → fetch real Shopify on-hand (available + committed)
-  //   → use that as hauptlager instead
-  //   → this way hauptlager always reflects true warehouse reality
+  // If newHauptlager <= 0 → fetch real on-hand and use that instead
   // ─────────────────────────────────────────────────────────────────────
   if (type === "transfer-to-aussenlager") {
     const variantId        = form.get("variantId");
-    const inventoryItemId  = form.get("inventoryItemId");           // needed to fetch on-hand
+    const inventoryItemId  = form.get("inventoryItemId");
     const newAussenlager   = parseInt(form.get("newAussenlager"),   10) || 0;
     const shopifyInventory = parseInt(form.get("shopifyInventory"), 10) || 0;
     let   newHauptlager    = shopifyInventory - newAussenlager;
 
-    // ── If hauptlager would be 0 or negative, replace it with real on-hand ──
     if (newHauptlager <= 0 && inventoryItemId) {
       const onHandRes = await admin.graphql(
         `query getOnHand($id: ID!) {
@@ -323,16 +392,11 @@ export const action = async ({ request }) => {
       const onHandData = await onHandRes.json();
       const quantities =
         onHandData.data?.inventoryItem?.inventoryLevels?.edges[0]?.node?.quantities || [];
-
       const available = quantities.find((q) => q.name === "available")?.quantity || 0;
       const committed = quantities.find((q) => q.name === "committed")?.quantity || 0;
-      console.log("On-hand fetched for variant", variantId, { available, committed });
-
-      // available + committed = on hand (what Shopify physically has)
-      newHauptlager = available + committed;
+      newHauptlager   = available + committed;
     }
 
-    // ── Write both metafields with the corrected hauptlager value ──
     const result = await admin.graphql(
       `mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
         metafieldsSet(metafields: $metafields) {
@@ -481,12 +545,8 @@ function InlineEditable({ value, onSave, type = "text", editing, onStartEdit, on
     return (
       <div style={{ minWidth: 110 }}>
         <TextField
-          value={val}
-          onChange={setVal}
-          onBlur={handleSave}
-          autoFocus
-          type={type}
-          onKeyDown={handleKeyDown}
+          value={val} onChange={setVal} onBlur={handleSave}
+          autoFocus type={type} onKeyDown={handleKeyDown}
         />
       </div>
     );
@@ -546,8 +606,6 @@ export default function Index() {
   const saveInventoryByInventoryItem = (inventoryItemId, quantity) =>
     submit({ type: "variant-inventory", inventoryItemId, quantity }, { method: "post" });
 
-  // ── CHANGED: accepts inventoryItemId and forwards it so the action
-  //    can fetch on-hand if hauptlager would go 0 or negative ──
   const transferToAussenlager = (variantId, inventoryItemId, shopifyInventory, productId, inputQty) => {
     const newAussenlager = Number(inputQty) || 0;
     if (newAussenlager <= 0) return;
@@ -555,7 +613,7 @@ export default function Index() {
       {
         type:             "transfer-to-aussenlager",
         variantId,
-        inventoryItemId,                              // ← forwarded to action
+        inventoryItemId,
         newAussenlager:   String(newAussenlager),
         shopifyInventory: String(Number(shopifyInventory) || 0),
       },
@@ -626,7 +684,6 @@ export default function Index() {
         if (filterType === "lowAfterReorder")
           return filterLowAfterReorder(totalHauptlager, totalMelde, totalAussenlager);
       }
-
       return true;
     });
   }, [products, filterType]);
@@ -635,11 +692,9 @@ export default function Index() {
     <>
       {isPageLoading && (
         <div style={{
-          position: "fixed", top: 0, left: 0,
-          width: "100vw", height: "100vh",
-          background: "rgba(0,0,0,0.4)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          zIndex: 9999,
+          position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
+          background: "rgba(0,0,0,0.4)", display: "flex",
+          alignItems: "center", justifyContent: "center", zIndex: 9999,
         }}>
           <div style={{
             background: "#fff", padding: "40px 60px", borderRadius: 16,
@@ -743,7 +798,6 @@ export default function Index() {
                   <th style={thStyle}>Aktion</th>
                 </tr>
               </thead>
-
               <tbody>
                 {filteredProducts.length === 0 ? (
                   <tr>
@@ -790,8 +844,6 @@ export default function Index() {
                     return (
                       <Fragment key={node.id}>
                         <tr style={{ background: isRedZone ? "rgba(255,0,0,0.08)" : "transparent" }}>
-
-                          {/* Artikel */}
                           <td style={{ ...tdStyle, minWidth: 220 }}>
                             <Text as="p" variant="bodyMd">{node.title}</Text>
                             {firstVariant?.sku && (
@@ -800,28 +852,18 @@ export default function Index() {
                               </Text>
                             )}
                           </td>
-
-                          {/* Hersteller */}
                           <td style={{ ...tdStyle, minWidth: 180 }}>
                             <Text as="p">{node.vendor || "—"}</Text>
                           </td>
-
-                          {/* Inventar */}
                           <td style={{ ...tdStyle, minWidth: 90, textAlign: "center" }}>
                             <Text as="p">{String(qty)}</Text>
                           </td>
-
-                          {/* Hauptlager */}
                           <td style={{ ...tdStyle, minWidth: 110 }}>
                             <Text as="p">{hauptlagerValue}</Text>
                           </td>
-
-                          {/* Außenlager */}
                           <td style={{ ...tdStyle, minWidth: 110 }}>
                             <Text as="p">{aussenlagerValue}</Text>
                           </td>
-
-                          {/* Außenlager Neu */}
                           <td style={{ ...tdStyle, minWidth: 155 }}>
                             {!hasRealVariants ? (
                               <InlineEditable
@@ -830,10 +872,9 @@ export default function Index() {
                                 onStartEdit={() => startEdit("product", node.id, "warehouse2")}
                                 onCancelEdit={cancelEdit}
                                 onSave={(v) =>
-                                  // ── CHANGED: pass inventoryItemId as 2nd arg ──
                                   transferToAussenlager(
                                     firstVariant?.id,
-                                    firstVariant?.inventoryItem?.id,  // ← NEW
+                                    firstVariant?.inventoryItem?.id,
                                     qty,
                                     node.id,
                                     v,
@@ -845,8 +886,6 @@ export default function Index() {
                               <Text as="p" tone="subdued">—</Text>
                             )}
                           </td>
-
-                          {/* Meldebestand */}
                           <td style={{ ...tdStyle, minWidth: 155 }}>
                             {!hasRealVariants ? (
                               <InlineStack gap="200" blockAlign="center">
@@ -864,8 +903,6 @@ export default function Index() {
                               <Text tone="subdued">—</Text>
                             )}
                           </td>
-
-                          {/* Aktion */}
                           <td style={{ ...tdStyle, minWidth: 170 }}>
                             <InlineStack gap="200">
                               {hasRealVariants && (
@@ -883,7 +920,6 @@ export default function Index() {
                           </td>
                         </tr>
 
-                        {/* Variant sub-table */}
                         {hasRealVariants && isOpen && (
                           <tr>
                             <td colSpan={8} style={{ ...tdStyle, background: "#f6f6f7", paddingLeft: 40 }}>
@@ -962,7 +998,6 @@ export default function Index() {
 
           <br />
 
-          {/* ── PAGINATION ── */}
           <InlineStack align="space-between" gap="300">
             <Button
               disabled={currentPage <= 1}
