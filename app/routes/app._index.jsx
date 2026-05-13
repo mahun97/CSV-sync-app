@@ -603,8 +603,10 @@ export default function Index() {
     submit({ type: "variant-inventory", inventoryItemId, quantity }, { method: "post" });
 
   const transferToAussenlager = (variantId, inventoryItemId, shopifyInventory, productId, inputQty) => {
-    const newAussenlager = Number(inputQty) || 0;
-    if (newAussenlager <= 0) return;
+    const newAussenlager = Number(inputQty);
+    // Allow 0 (to reset Außenlager); only block empty/non-numeric input
+    if (inputQty === "" || inputQty === null || inputQty === undefined || isNaN(newAussenlager)) return;
+    if (newAussenlager < 0) return;
     submit(
       {
         type:             "transfer-to-aussenlager",
@@ -860,7 +862,7 @@ export default function Index() {
                           <td style={{ ...tdStyle, minWidth: 155 }}>
                             {!hasRealVariants ? (
                               <InlineEditable
-                                value={tempWarehouse2[node.id] || ""}
+                                value={tempWarehouse2[node.id] ?? ""}
                                 editing={isEditing("product", node.id, "warehouse2")}
                                 onStartEdit={() => startEdit("product", node.id, "warehouse2")}
                                 onCancelEdit={cancelEdit}
