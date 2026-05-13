@@ -130,7 +130,7 @@ async function runOnce() {
 
   const priceMap = {};
   for (const row of rows) {
-   const csvProductId = String(row["product id"] || "").trim();
+    const csvProductId = String(row["product id"] || "").trim();
     const price = row["recommended price"];
 
     if (csvProductId && price) {
@@ -163,6 +163,13 @@ async function runOnce() {
               pricing: metafield(namespace: "custom", key: "pricing") {
                 value
               }
+                pricingPremium: metafield(namespace: "custom", key: "pricing_premium") {
+  value
+}
+
+pricingCustomer: metafield(namespace: "custom", key: "pricing_customer") {
+  value
+}
             }
           }
         }
@@ -181,7 +188,7 @@ async function runOnce() {
       if (!metafieldValue) continue;
 
       const csvPrice = priceMap[metafieldValue];
-      if (!csvPrice) continue;
+      if (csvPrice == null || Number.isNaN(csvPrice)) continue;
 
       // 3️⃣ SAFE PARSE EXISTING JSON
       let existing = {};
@@ -192,9 +199,27 @@ async function runOnce() {
       } catch {
         existing = {};
       }
+      let existingPremium = {};
+try {
+  existingPremium = variant.pricingPremium?.value
+    ? JSON.parse(variant.pricingPremium.value)
+    : {};
+} catch {
+  existingPremium = {};
+}
+
+let existingCustomer = {};
+try {
+  existingCustomer = variant.pricingCustomer?.value
+    ? JSON.parse(variant.pricingCustomer.value)
+    : {};
+} catch {
+  existingCustomer = {};
+}
 
       // 4️⃣ BUILD PATCH (NO STRUCTURE OVERWRITE)
       const newPricing = {
+
         ...existing,
 
         base_price: existing.base_price, // NEVER TOUCH
@@ -224,28 +249,107 @@ async function runOnce() {
         newPricing.tiered_price = existing.tiered_price;
       }
 
+      const newPremiumPricing = {
+  ...existingPremium,
+
+  base_price: existingPremium.base_price,
+
+  base_price_google: csvPrice,
+  base_price_idealo: csvPrice,
+};
+
+if (existingPremium.tiered_price_google) {
+  newPremiumPricing.tiered_price_google = {
+    ...existingPremium.tiered_price_google,
+    1: csvPrice,
+  };
+}
+
+if (existingPremium.tiered_price_idealo) {
+  newPremiumPricing.tiered_price_idealo = {
+    ...existingPremium.tiered_price_idealo,
+    1: csvPrice,
+  };
+}
+
+if (existingPremium.tiered_price) {
+  newPremiumPricing.tiered_price = existingPremium.tiered_price;
+}
+
+const newCustomerPricing = {
+  ...existingCustomer,
+
+  base_price: existingCustomer.base_price,
+
+  base_price_google: csvPrice,
+  base_price_idealo: csvPrice,
+};
+
+if (existingCustomer.tiered_price_google) {
+  newCustomerPricing.tiered_price_google = {
+    ...existingCustomer.tiered_price_google,
+    1: csvPrice,
+  };
+}
+
+if (existingCustomer.tiered_price_idealo) {
+  newCustomerPricing.tiered_price_idealo = {
+    ...existingCustomer.tiered_price_idealo,
+    1: csvPrice,
+  };
+}
+
+if (existingCustomer.tiered_price) {
+  newCustomerPricing.tiered_price = existingCustomer.tiered_price;
+}
+
       console.log("💰 Updating SKU:", variant.sku);
 
       try {
-        await graphqlForShop(
-          shop,
-          token,
-          `mutation {
-            metafieldsSet(metafields: [
-              {
-                ownerId: "${variant.id}"
-                namespace: "custom"
-                key: "pricing"
-                type: "json"
-                value: "${JSON.stringify(newPricing)
-                  .replace(/\\/g, "\\\\")
-                  .replace(/"/g, '\\"')}"
-              }
-            ]) {
-              userErrors { field message }
-            }
-          }`
-        );
+       await graphqlForShop(
+  shop,
+  token,
+  `mutation {
+    metafieldsSet(metafields: [
+
+      {
+        ownerId: "${variant.id}"
+        namespace: "custom"
+        key: "pricing"
+        type: "json"
+        value: "${JSON.stringify(newPricing)
+          .replace(/\\/g, "\\\\")
+          .replace(/"/g, '\\"')}"
+      },
+
+      {
+        ownerId: "${variant.id}"
+        namespace: "custom"
+        key: "pricing_premium"
+        type: "json"
+        value: "${JSON.stringify(newPremiumPricing)
+          .replace(/\\/g, "\\\\")
+          .replace(/"/g, '\\"')}"
+      },
+
+      {
+        ownerId: "${variant.id}"
+        namespace: "custom"
+        key: "pricing_customer"
+        type: "json"
+        value: "${JSON.stringify(newCustomerPricing)
+          .replace(/\\/g, "\\\\")
+          .replace(/"/g, '\\"')}"
+      }
+
+    ]) {
+      userErrors {
+        field
+        message
+      }
+    }
+  }`
+);
 
         updated++;
         await new Promise((r) => setTimeout(r, 200));
