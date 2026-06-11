@@ -371,15 +371,17 @@ pricingCustomer: metafield(namespace: "custom", key: "pricing_customer") {
 
 // ✅ don't crash dev server
 runOnce().catch(console.error);
+
 let isRunning = false;
 
-cron.schedule("*/3 * * * *", async () => {
+async function executeJob() {
   if (isRunning) {
     console.log("⏳ Skipping run (already running)");
     return;
   }
 
   isRunning = true;
+
   try {
     await runOnce();
   } catch (e) {
@@ -387,4 +389,14 @@ cron.schedule("*/3 * * * *", async () => {
   } finally {
     isRunning = false;
   }
+}
+
+// 🇩🇪 Germany time - Daily at 11:00 PM
+cron.schedule("0 23 * * *", executeJob, {
+  timezone: "Europe/Berlin",
+});
+
+// 🇩🇪 Germany time - Verification run at 12:15 AM
+cron.schedule("15 0 * * *", executeJob, {
+  timezone: "Europe/Berlin",
 });
