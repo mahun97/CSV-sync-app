@@ -391,12 +391,12 @@ async function executeJob() {
   }
 }
 
-// 🇩🇪 Germany time - Daily at 11:00 PM
-cron.schedule("0 23 * * *", executeJob, {
+// 🇩🇪 Germany time - Daily at 10:30 AM
+cron.schedule("30 10 * * *", executeJob, {
   timezone: "Europe/Berlin",
 });
 
-// 🇩🇪 Germany time - Verification run at 12:15 AM
-cron.schedule("15 0 * * *", executeJob, {
+// 🇩🇪 Germany time - Verification run at 11:00 AM
+cron.schedule("0 11 * * *", executeJob, {
   timezone: "Europe/Berlin",
 });
