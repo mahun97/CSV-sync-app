@@ -98,6 +98,7 @@ export const loader = async ({ request }) => {
   const filterType  = ["none", "lowMain", "lowAfterReorder"].includes(filterParam)
     ? filterParam
     : "lowMain";
+  const vendorParam = url.searchParams.get("vendor") || "";
 
   const query = buildProductsQuery(qParam);
 
@@ -280,9 +281,23 @@ export const loader = async ({ request }) => {
     }
   }
 
-  const unfilteredCount = allRows.length;
-  const rows = allRows.filter(({ variant }) => {
-    const shopifyQty     = Number(variant.inventoryQuantity) || 0;
+  // Sortierung wie im Altshop: Hersteller, Artikel, Hauptlager
+  allRows.sort(
+    (a, b) =>
+      (a.product.vendor || "").localeCompare(b.product.vendor || "", "de") ||
+      a.product.title.localeCompare(b.product.title, "de") ||
+      (Number(a.variant.inventoryQuantity) || 0) - (Number(b.variant.inventoryQuantity) || 0),
+  );
+
+  const vendors = [...new Set(allProducts.map((e) => e.node.vendor).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "de"));
+
+  const vendorRows = vendorParam
+    ? allRows.filter(({ product }) => product.vendor === vendorParam)
+    : allRows;
+  const unfilteredCount = vendorRows.length;
+  const rows = vendorRows.filter(({ variant }) => {
+    const shopifyQty    = Number(variant.inventoryQuantity) || 0;
     const aussenlagerQty = Number(variant.aussenlager?.value) || 0;
     const meldeQty       = Number(variant.melde?.value) || 0;
     if (filterType === "lowMain") return filterLowMainInventory(shopifyQty, aussenlagerQty);
@@ -306,6 +321,8 @@ export const loader = async ({ request }) => {
     q: qParam,
     limit: PAGE_SIZE,
     filterType,
+    vendor: vendorParam,
+    vendors,
   });
 };
 
@@ -623,6 +640,7 @@ function InlineEditable({ value, onSave, type = "text", editing, onStartEdit, on
 export default function Index() {
   const {
     rows, totalCount, unfilteredCount, totalPages, currentPage, q, limit, filterType,
+    vendor, vendors,
   } = useLoaderData();
   const navigate   = useNavigate();
   const submit     = useSubmit();
@@ -637,12 +655,14 @@ export default function Index() {
 
   useEffect(() => setSearch(q || ""), [q]);
 
-  const buildUrl = ({ q: qVal, page: pg, limit: lim, filter: flt }) => {
+  const buildUrl = ({ q: qVal, page: pg, limit: lim, filter: flt, vendor: vnd }) => {
     const sp = new URLSearchParams();
     if (qVal) sp.set("q", qVal);
     sp.set("page",   String(pg  ?? currentPage));
     sp.set("limit",  String(lim ?? limit));
     sp.set("filter", String(flt ?? filterType));
+    const vndVal = vnd ?? vendor;
+    if (vndVal) sp.set("vendor", vndVal);
     return `?${sp.toString()}`;
   };
 
@@ -723,7 +743,7 @@ export default function Index() {
 
             <div style={{ marginTop: 10 }}>
               <Text as="p" variant="bodySm" tone="subdued">
-                Zeigt jede Variante mit Außenlager-Wert · Sortiert nach Titel
+                Zeigt jede Variante mit Außenlager-Wert · Sortiert nach Hersteller, Artikel, Hauptlager
                 {q ? <> | Suchbegriff: <strong>{q}</strong></> : null}
               </Text>
             </div>
@@ -733,6 +753,15 @@ export default function Index() {
               justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap",
             }}>
               <InlineStack gap="400" blockAlign="end">
+                <Select
+                  label="Hersteller"
+                  options={[
+                    { label: "--Alle--", value: "" },
+                    ...vendors.map((v) => ({ label: v, value: v })),
+                  ]}
+                  value={vendor}
+                  onChange={(val) => navigate(buildUrl({ q: q || "", page: 1, vendor: val }))}
+                />
                 <Select
                   label="Filter"
                   options={[
