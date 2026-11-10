@@ -851,7 +851,7 @@ export default function Index() {
                           />
                         </td>
                         <td style={{ ...tdStyle, minWidth: 110 }}>
-                          <Text as="p">{vr.aussenlager?.value ?? "—"}</Text>
+                          <Text as="p" tone="critical" fontWeight="semibold">{vr.aussenlager?.value ?? "—"}</Text>
                         </td>
                         <td style={{ ...tdStyle, minWidth: 155 }}>
                           <InlineEditable
