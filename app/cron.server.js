@@ -113,6 +113,37 @@ async function graphqlForShop(shop, accessToken, query) {
 }
 
 
+// --------------------
+// EK-Sperre
+// --------------------
+// Shopify "Kosten pro Artikel" = EK netto → Grenze = EK × MwSt-Faktor (Standard 7 %)
+const EK_FAKTOR = Number(process.env.EK_FAKTOR) || 1.07;
+const alertedToday = new Map(); // sku → "datum|preis", damit der 11-Uhr-Lauf nicht doppelt meldet
+
+async function sendEkAlert(blocked) {
+  const today = new Date().toLocaleDateString("de-DE", { timeZone: "Europe/Berlin" });
+  const fresh = blocked.filter((b) => {
+    const key = `${today}|${b.omnia}`;
+    if (alertedToday.get(b.sku) === key) return false;
+    alertedToday.set(b.sku, key);
+    return true;
+  });
+  console.log("⛔ EK-Sperre gesamt:", blocked.length, "neu:", fresh.length);
+  if (!fresh.length || !process.env.EK_ALERT_WEBHOOK) return;
+  try {
+    await fetch(process.env.EK_ALERT_WEBHOOK, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        run: new Date().toLocaleString("de-DE", { timeZone: "Europe/Berlin" }),
+        items: fresh,
+      }),
+    });
+  } catch (err) {
+    console.log("❌ EK-Warnung nicht gesendet:", err.message);
+  }
+}
+
 async function runOnce() {
   const { shop, token } = await getValidOfflineSession();
 
@@ -145,6 +176,7 @@ async function runOnce() {
   let cursor = null;
   let updated = 0;
   let scanned = 0;
+  const blocked = [];
 
   while (hasNextPage) {
     const data = await graphqlForShop(
@@ -157,6 +189,8 @@ async function runOnce() {
             node {
               id
               sku
+              displayName
+              inventoryItem { unitCost { amount } }
               omnia: metafield(namespace: "custom", key: "omnia") {
                 value
               }
@@ -189,6 +223,17 @@ pricingCustomer: metafield(namespace: "custom", key: "pricing_customer") {
 
       const csvPrice = priceMap[metafieldValue];
       if (csvPrice == null || Number.isNaN(csvPrice)) continue;
+
+      // EK-Sperre: Omnia-Empfehlung unter EK (inkl. MwSt.) wird verworfen
+      const ek = Number(variant.inventoryItem?.unitCost?.amount) || 0;
+      const ekLimit = Math.round(ek * EK_FAKTOR * 100) / 100;
+      if (ek > 0 && csvPrice < ekLimit) {
+        let kept = null;
+        try { kept = JSON.parse(variant.pricing?.value || "{}").base_price_google ?? null; } catch {}
+        console.log("⛔ EK-Sperre:", variant.sku, csvPrice, "<", ekLimit);
+        blocked.push({ sku: variant.sku, name: variant.displayName, omnia: csvPrice, limit: ekLimit, ek, kept });
+        continue;
+      }
 
       // 3️⃣ SAFE PARSE EXISTING JSON
       let existing = {};
@@ -361,6 +406,8 @@ pricingCustomer: metafield(namespace: "custom", key: "pricing_customer") {
     hasNextPage = data.productVariants.pageInfo.hasNextPage;
     cursor = data.productVariants.pageInfo.endCursor;
   }
+
+  await sendEkAlert(blocked);
 
   console.log("──────── SYNC COMPLETE ────────");
   console.log("Variants scanned:", scanned);
