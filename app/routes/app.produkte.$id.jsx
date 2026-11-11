@@ -282,11 +282,12 @@ function marginInfo(price, cost) {
   return { diff, pct: (diff / p) * 100 };
 }
 
-const cellInput = { width: "100%", border: "1px solid var(--p-color-border)", borderRadius: 8, padding: "6px 8px", font: "inherit", fontSize: 13, background: "var(--p-color-bg-surface)", boxSizing: "border-box" };
+const cellInput = { width: "100%", minWidth: 0, maxWidth: "100%", display: "block", border: "1px solid var(--p-color-border)", borderRadius: 8, padding: "6px 8px", font: "inherit", fontSize: 13, background: "var(--p-color-bg-surface)", boxSizing: "border-box" };
 
 function Cell({ value, onChange, placeholder, align = "left", invalid, width }) {
   return (
     <input
+      size={1}
       value={value ?? ""}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
