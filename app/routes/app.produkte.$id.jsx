@@ -290,7 +290,7 @@ function Cell({ value, onChange, placeholder, align = "left", invalid, width }) 
       value={value ?? ""}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
-      style={{ ...cellInput, textAlign: align, width, borderColor: invalid ? "var(--p-color-border-critical)" : "var(--p-color-border)" }}
+      style={{ ...cellInput, textAlign: align, ...(width ? { width } : {}), borderColor: invalid ? "var(--p-color-border-critical)" : "var(--p-color-border)" }}
     />
   );
 }
