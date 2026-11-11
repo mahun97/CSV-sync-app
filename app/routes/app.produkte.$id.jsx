@@ -301,7 +301,7 @@ function VariantTable({ variants, isNew, optionName, setOptionName, onChange, on
   return (
     <BlockStack gap="300">
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
           <thead>
             <tr>
               <th style={head}>{optionName || "Sorte"}</th>
@@ -564,6 +564,25 @@ function Editor() {
         )}
         {actionData?.ok && !dirty && <Banner tone="success" title="Gespeichert" />}
 
+        <Card>
+          <BlockStack gap="300">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="h2" variant="headingMd">Sorten, Preise & Omnia</Text>
+              <Text as="span" variant="bodySm" tone="subdued">Preis = Google, idealo und Shop · Min/Max = Grenzen für Omnia</Text>
+            </InlineStack>
+            <VariantTable
+              variants={p.variants}
+              isNew={isNew}
+              optionName={p.optionName}
+              setOptionName={(v) => update({ optionName: v })}
+              onChange={setVariant}
+              onAdd={addVariant}
+              onRemove={removeVariant}
+              onMore={setMoreIndex}
+              onApplyFirst={applyFirst}
+            />
+          </BlockStack>
+        </Card>
         <Layout>
           <Layout.Section>
             <BlockStack gap="400">
@@ -581,25 +600,6 @@ function Editor() {
                 </BlockStack>
               </Card>
 
-              <Card>
-                <BlockStack gap="300">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text as="h2" variant="headingMd">Sorten, Preise & Omnia</Text>
-                    <Text as="span" variant="bodySm" tone="subdued">Preis = Google, idealo und Shop · Min/Max = Grenzen für Omnia</Text>
-                  </InlineStack>
-                  <VariantTable
-                    variants={p.variants}
-                    isNew={isNew}
-                    optionName={p.optionName}
-                    setOptionName={(v) => update({ optionName: v })}
-                    onChange={setVariant}
-                    onAdd={addVariant}
-                    onRemove={removeVariant}
-                    onMore={setMoreIndex}
-                    onApplyFirst={applyFirst}
-                  />
-                </BlockStack>
-              </Card>
 
               <Card padding="0">
                 <Box padding="400" paddingBlockEnd="0"><Text as="h2" variant="headingMd">Produktinformationen</Text></Box>

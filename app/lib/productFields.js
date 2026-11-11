@@ -117,6 +117,7 @@ const clean = (t) => String(t || "").replace(/\s+-\s+/g, " ").replace(/\s+/g, " 
 
 export function seoSuggestion(title, vendor) {
   const t = clean(title);
+  if (!t) return { seoTitle: "", seoDescription: "", handle: "" };
   const seoTitle = `${t} günstig kaufen | Sportnahrung Kwax`.length <= 70 ? `${t} günstig kaufen | Sportnahrung Kwax` : `${t} | Sportnahrung Kwax`.slice(0, 70);
   const seoDescription = `${t} jetzt bei Sportnahrung Kwax günstig bestellen${vendor ? ` – Original von ${vendor}` : ""}. Schneller Versand und faire Preise.`.slice(0, 160);
   return { seoTitle, seoDescription, handle: slugify(title) };
