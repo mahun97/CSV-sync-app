@@ -252,17 +252,15 @@ export default function ProduktEditor() {
       backAction={{ content: "Produkte", onAction: () => navigate("/app/produkte") }}
       title={isNew ? "Neues Produkt" : p.title || "Produkt"}
       titleMetadata={!isNew && <Badge tone={p.status === "ACTIVE" ? "success" : p.status === "DRAFT" ? "info" : undefined}>{p.status === "ACTIVE" ? "Aktiv" : p.status === "DRAFT" ? "Entwurf" : "Archiviert"}</Badge>}
-      primaryAction={{ content: isNew ? "Produkt anlegen" : "Speichern", loading: saving, disabled: !isNew && !dirty && !newImages.length, onAction: save }}
-      secondaryActions={
-        isNew
-          ? []
-          : [
-              { content: "Als Vorlage für neues Produkt", onAction: () => navigate(`/app/produkte/neu?from=${p.id.split("/").pop()}`) },
-              { content: "In Shopify öffnen", onAction: openInShopify },
-            ]
-      }
     >
       <BlockStack gap="400">
+        <InlineStack gap="200" align="end">
+          {!isNew && <Button onClick={() => navigate(`/app/produkte/neu?from=${p.id.split("/").pop()}`)}>Als Vorlage für neues Produkt</Button>}
+          {!isNew && <Button onClick={openInShopify}>In Shopify öffnen</Button>}
+          <Button variant="primary" loading={saving} disabled={!isNew && !dirty && !newImages.length} onClick={save}>
+            {isNew ? "Produkt anlegen" : "Speichern"}
+          </Button>
+        </InlineStack>
         {created && (
           <Banner tone="success" title="Produkt angelegt">
             <p>Das Produkt ist als Entwurf gespeichert. Zum Veröffentlichen Status auf „Aktiv“ setzen und in Shopify die Vertriebskanäle (Online Store, POS) auswählen.</p>
@@ -430,6 +428,11 @@ export default function ProduktEditor() {
             </BlockStack>
           </Layout.Section>
         </Layout>
+        <InlineStack align="end">
+          <Button variant="primary" loading={saving} disabled={!isNew && !dirty && !newImages.length} onClick={save}>
+            {isNew ? "Produkt anlegen" : "Speichern"}
+          </Button>
+        </InlineStack>
       </BlockStack>
     </Page>
   );

@@ -225,10 +225,16 @@ export default function Repricer() {
     <Page
       title="Repricer"
       subtitle="Omnia-Preise prüfen, begrenzen und übernehmen – mit vollständigem Protokoll"
-      primaryAction={{ content: "Jetzt ausführen", loading: busy, disabled: running, onAction: () => submit({ intent: "run" }, { method: "post" }) }}
-      secondaryActions={[{ content: "Probelauf (ohne Schreiben)", disabled: running, onAction: () => submit({ intent: "dry" }, { method: "post" }) }]}
     >
       <BlockStack gap="400">
+        <InlineStack gap="200" align="end">
+          <Button disabled={running} loading={busy && nav.formData?.get("intent") === "dry"} onClick={() => submit({ intent: "dry" }, { method: "post" })}>
+            Probelauf (ohne Schreiben)
+          </Button>
+          <Button variant="primary" disabled={running} loading={busy && nav.formData?.get("intent") === "run"} onClick={() => submit({ intent: "run" }, { method: "post" })}>
+            Jetzt ausführen
+          </Button>
+        </InlineStack>
         {dbError && (
           <Banner tone="critical" title="Protokoll-Datenbank nicht erreichbar">
             <p>{dbError}</p>

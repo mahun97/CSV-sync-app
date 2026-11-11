@@ -124,8 +124,9 @@ export default function Produkte() {
     <Page
       title="Produkte"
       subtitle="Artikel, Preise, Omnia-Grenzen und Produkttexte an einem Ort"
-      primaryAction={{ content: "Produkt anlegen", onAction: () => navigate("/app/produkte/neu") }}
     >
+      <BlockStack gap="400">
+      <InlineStack align="end"><Button variant="primary" onClick={() => navigate("/app/produkte/neu")}>Produkt anlegen</Button></InlineStack>
       <Card padding="0">
         <Box padding="300">
           <InlineStack gap="300" wrap={false} blockAlign="end">
@@ -201,6 +202,7 @@ export default function Produkte() {
           </InlineStack>
         </Box>
       </Card>
+      </BlockStack>
     </Page>
   );
 }
