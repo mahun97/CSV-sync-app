@@ -1,4 +1,4 @@
-import { PRODUCT_METAFIELDS, VARIANT_METAFIELDS, num } from "./productFields";
+import { PRODUCT_METAFIELDS, VARIANT_METAFIELDS, num, computeLabels } from "./productFields";
 
 const NS = "custom";
 
@@ -17,7 +17,8 @@ const vmAliases = [...VARIANT_METAFIELDS.map((f) => f.key), "pricing", "pricing_
 const PRODUCT_QUERY = `
   query ($id: ID!) {
     product(id: $id) {
-      id title handle vendor productType status tags descriptionHtml onlineStorePreviewUrl updatedAt
+      id title handle vendor productType status tags descriptionHtml onlineStorePreviewUrl onlineStoreUrl updatedAt
+      seo { title description }
       options { name values }
       media(first: 20) { nodes { ... on MediaImage { id image { url altText } } } }
       ${pmAliases}
@@ -57,6 +58,9 @@ export async function loadProduct(admin, gid) {
       id: p.id,
       title: p.title,
       handle: p.handle,
+      seoTitle: p.seo?.title || "",
+      seoDescription: p.seo?.description || "",
+      onlineStoreUrl: p.onlineStoreUrl,
       vendor: p.vendor,
       productType: p.productType,
       status: p.status,
@@ -65,6 +69,7 @@ export async function loadProduct(admin, gid) {
       previewUrl: p.onlineStorePreviewUrl,
       updatedAt: p.updatedAt,
       options: p.options,
+      optionName: p.options?.[0]?.name && p.options[0].name !== "Title" ? p.options[0].name : "Geschmack",
       images: p.media.nodes.filter((m) => m.image).map((m) => ({ id: m.id, url: m.image.url, alt: m.image.altText })),
       meta: pickMeta(p, PRODUCT_METAFIELDS.map((f) => f.key)),
       variants: p.variants.nodes.map((v) => {
@@ -165,9 +170,73 @@ async function addImages(admin, productId, urls, errors) {
   errors.push(...d.productCreateMedia.mediaUserErrors.map((e) => `Bild: ${e.message}`));
 }
 
-export async function saveProduct(admin, data, original) {
+function variantCreateInput(v, optionName, locationId) {
+  const price = num(v.price) ?? 0;
+  const pricing = JSON.stringify({ base_price: price, base_price_google: price, base_price_idealo: price });
+  const meta = VARIANT_METAFIELDS.map((f) => {
+    let raw = v.meta?.[f.key];
+    if (f.key === "omnia" && !raw) raw = v.sku;
+    if ((f.key === "aussenlager" || f.key === "melde") && (raw === "" || raw === undefined)) raw = "0";
+    if (raw === "" || raw === undefined || raw === null) return null;
+    return { namespace: NS, key: f.key, type: f.type, value: metaValue(f, raw) };
+  }).filter(Boolean);
+  meta.push(
+    { namespace: NS, key: "pricing", type: "json", value: pricing },
+    { namespace: NS, key: "pricing_premium", type: "json", value: pricing },
+    { namespace: NS, key: "pricing_customer", type: "json", value: pricing },
+    { namespace: NS, key: "google_export", type: "boolean", value: "true" },
+  );
+  const input = {
+    optionValues: [{ optionName, name: (v.option || "").trim() || "Default Title" }],
+    price: price.toFixed(2),
+    barcode: v.barcode || null,
+    inventoryItem: { sku: v.sku || null, tracked: true, ...(num(v.cost) !== null ? { cost: num(v.cost) } : {}) },
+    metafields: meta,
+  };
+  if (num(v.compareAtPrice)) input.compareAtPrice = num(v.compareAtPrice).toFixed(2);
+  if (locationId && v.stock !== "" && v.stock !== undefined && v.stock !== null) {
+    input.inventoryQuantities = [{ locationId, availableQuantity: parseInt(v.stock, 10) || 0 }];
+  }
+  return input;
+}
+
+async function applyMedia(admin, productId, media, originalImages, errors) {
+  if (!media) return;
+  const keepIds = new Set(media.filter((m) => m.kind === "existing").map((m) => m.id));
+  const removed = (originalImages || []).filter((i) => !keepIds.has(i.id)).map((i) => i.id);
+  if (removed.length) {
+    const d = await gql(admin, `mutation ($p: ID!, $m: [ID!]!) { productDeleteMedia(productId: $p, mediaIds: $m) { mediaUserErrors { message } } }`, { p: productId, m: removed });
+    errors.push(...d.productDeleteMedia.mediaUserErrors.map((e) => `Bild löschen: ${e.message}`));
+  }
+  const fresh = media.filter((m) => m.kind === "new" && m.resourceUrl);
+  let created = [];
+  if (fresh.length) {
+    const d = await gql(
+      admin,
+      `mutation ($id: ID!, $media: [CreateMediaInput!]!) { productCreateMedia(productId: $id, media: $media) { media { id } mediaUserErrors { message } } }`,
+      { id: productId, media: fresh.map((m) => ({ originalSource: m.resourceUrl, mediaContentType: "IMAGE" })) },
+    );
+    errors.push(...d.productCreateMedia.mediaUserErrors.map((e) => `Bild: ${e.message}`));
+    created = d.productCreateMedia.media || [];
+  }
+  // Reihenfolge wie in der Oberfläche (Hauptbild zuerst)
+  const newIdByKey = Object.fromEntries(fresh.map((m, i) => [m.key, created[i]?.id]));
+  const ordered = media.map((m) => (m.kind === "existing" ? m.id : newIdByKey[m.key])).filter(Boolean);
+  const origOrder = (originalImages || []).map((i) => i.id).filter((id) => keepIds.has(id));
+  const changed = ordered.some((id, i) => id !== origOrder[i]) && ordered.length > 1;
+  if (changed) {
+    const moves = ordered.map((id, i) => ({ id, newPosition: String(i) }));
+    const d = await gql(admin, `mutation ($id: ID!, $moves: [MoveInput!]!) { productReorderMedia(id: $id, moves: $moves) { mediaUserErrors { message } } }`, { id: productId, moves });
+    errors.push(...d.productReorderMedia.mediaUserErrors.map((e) => `Bildreihenfolge: ${e.message}`));
+  }
+}
+
+export async function saveProduct(admin, data, original, locationId) {
   const errors = [];
   const pid = data.id;
+
+  // Google-Labels automatisch
+  data.meta = { ...data.meta, ...computeLabels(data.variants, data.meta) };
 
   const up = await gql(
     admin,
@@ -181,6 +250,8 @@ export async function saveProduct(admin, data, original) {
         status: data.status,
         tags: String(data.tags || "").split(",").map((t) => t.trim()).filter(Boolean),
         descriptionHtml: data.descriptionHtml,
+        ...(data.handle && data.handle !== original?.handle ? { handle: data.handle, redirectNewHandle: true } : {}),
+        seo: { title: data.seoTitle || null, description: data.seoDescription || null },
       },
     },
   );
@@ -196,7 +267,27 @@ export async function saveProduct(admin, data, original) {
   set.push(...pm.set);
   del.push(...pm.del);
 
-  for (const v of data.variants) {
+  // gelöschte Varianten
+  const keptIds = new Set(data.variants.filter((v) => v.id).map((v) => v.id));
+  const removedVariants = (original?.variants || []).filter((v) => !keptIds.has(v.id)).map((v) => v.id);
+  if (removedVariants.length) {
+    const d = await gql(admin, `mutation ($p: ID!, $v: [ID!]!) { productVariantsBulkDelete(productId: $p, variantsIds: $v) { userErrors { message } } }`, { p: pid, v: removedVariants });
+    errors.push(...d.productVariantsBulkDelete.userErrors.map((e) => `Variante löschen: ${e.message}`));
+  }
+
+  // neue Varianten
+  const fresh = data.variants.filter((v) => !v.id);
+  if (fresh.length) {
+    const optionName = original?.optionName || data.optionName || "Geschmack";
+    const d = await gql(
+      admin,
+      `mutation ($p: ID!, $v: [ProductVariantsBulkInput!]!) { productVariantsBulkCreate(productId: $p, variants: $v, strategy: DEFAULT) { userErrors { field message } } }`,
+      { p: pid, v: fresh.map((v) => variantCreateInput(v, optionName, locationId)) },
+    );
+    errors.push(...d.productVariantsBulkCreate.userErrors.map((e) => `Neue Variante: ${e.message}`));
+  }
+
+  for (const v of data.variants.filter((x) => x.id)) {
     const o = origVariants[v.id] || {};
     const price = num(v.price);
     const input = { id: v.id };
@@ -233,12 +324,13 @@ export async function saveProduct(admin, data, original) {
   }
   await flushMetafields(admin, set, del, errors);
   await setStock(admin, stock, errors);
-  await addImages(admin, pid, data.newImages || [], errors);
+  await applyMedia(admin, pid, data.media, original?.images, errors);
   return { errors };
 }
 
 export async function createProduct(admin, data, locationId) {
   const errors = [];
+  data.meta = { ...data.meta, ...computeLabels(data.variants, data.meta) };
   const optionName = (data.optionName || "").trim() || "Title";
   const single = data.variants.length === 1 && !data.variants[0].option?.trim();
 
@@ -291,6 +383,8 @@ export async function createProduct(admin, data, locationId) {
         status: data.status || "DRAFT",
         tags: String(data.tags || "").split(",").map((t) => t.trim()).filter(Boolean),
         descriptionHtml: data.descriptionHtml,
+        ...(data.handle ? { handle: data.handle } : {}),
+        seo: { title: data.seoTitle || null, description: data.seoDescription || null },
         productOptions: [{ name: optionName, values: variants.map((v) => ({ name: v.optionValues[0].name })) }],
         variants,
         metafields: productMeta,
@@ -299,6 +393,6 @@ export async function createProduct(admin, data, locationId) {
   );
   errors.push(...d.productSet.userErrors.map((e) => `${(e.field || []).join(".")}: ${e.message}`));
   const id = d.productSet.product?.id;
-  if (id) await addImages(admin, id, data.newImages || [], errors);
+  if (id) await applyMedia(admin, id, data.media, [], errors);
   return { id, errors };
 }

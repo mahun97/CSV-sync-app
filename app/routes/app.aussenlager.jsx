@@ -10,11 +10,15 @@ import {
   Card,
   Button,
   InlineStack,
+  InlineGrid,
+  BlockStack,
+  Box,
   Badge,
   Text,
   TextField,
   Spinner,
   Select,
+  Pagination,
 } from "@shopify/polaris";
 
 /* =======================
@@ -274,6 +278,7 @@ export const loader = async ({ request }) => {
           id: node.id,
           title: node.title,
           vendor: node.vendor,
+          image: node.featuredImage?.url || null,
           hasRealVariants: node.variants.edges.length > 1 || variant.title !== "Default Title",
         },
         variant,
@@ -296,6 +301,8 @@ export const loader = async ({ request }) => {
     ? allRows.filter(({ product }) => product.vendor === vendorParam)
     : allRows;
   const unfilteredCount = vendorRows.length;
+  const redCount = vendorRows.filter(({ variant }) => filterLowMainInventory(Number(variant.inventoryQuantity) || 0, Number(variant.aussenlager?.value) || 0)).length;
+  const orangeCount = vendorRows.filter(({ variant }) => filterLowAfterReorder(Number(variant.inventoryQuantity) || 0, Number(variant.melde?.value) || 0, Number(variant.aussenlager?.value) || 0)).length;
   const rows = vendorRows.filter(({ variant }) => {
     const shopifyQty    = Number(variant.inventoryQuantity) || 0;
     const aussenlagerQty = Number(variant.aussenlager?.value) || 0;
@@ -316,6 +323,8 @@ export const loader = async ({ request }) => {
     rows: pageRows,
     totalCount,
     unfilteredCount,
+    redCount,
+    orangeCount,
     totalPages,
     currentPage: safePage,
     q: qParam,
@@ -577,309 +586,203 @@ export const action = async ({ request }) => {
 };
 
 /* =======================
-   STYLES
+   DARSTELLUNG
 ======================= */
-const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: "14px" };
-const thStyle = {
-  textAlign: "left", padding: "10px 12px",
-  borderBottom: "2px solid #e1e3e5", color: "#6d7175", fontWeight: 600, background: "#f6f6f7",
-};
-const tdStyle = { padding: "10px 12px", borderBottom: "1px solid #e1e3e5", verticalAlign: "middle" };
+const th = { textAlign: "left", padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "var(--p-color-text-secondary)", borderBottom: "1px solid var(--p-color-border)", background: "var(--p-color-bg-surface-secondary)", whiteSpace: "nowrap" };
+const td = { padding: "10px 12px", borderBottom: "1px solid var(--p-color-border-secondary)", verticalAlign: "middle" };
 
-/* =======================
-   INLINE EDIT CELL
-======================= */
-function InlineEditable({ value, onSave, type = "text", editing, onStartEdit, onCancelEdit }) {
+/* Klickbarer Wert, der zum Eingabefeld wird */
+function InlineEditable({ value, onSave, type = "text", editing, onStartEdit, onCancelEdit, placeholder = "–", strong, tone }) {
   const [val, setVal] = useState(value);
   useEffect(() => setVal(value), [value, editing]);
-
   const handleSave = () => {
     onCancelEdit();
     if (String(val) !== String(value)) onSave(val);
   };
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter") handleSave();
-    if (e.key === "Escape") { setVal(value); onCancelEdit(); }
-  };
-
   if (editing) {
     return (
-      <div style={{ minWidth: 110 }}>
-        <TextField
-          value={val} onChange={setVal} onBlur={handleSave}
-          autoFocus type={type} onKeyDown={handleKeyDown}
-        />
-      </div>
+      <input
+        autoFocus
+        type={type}
+        value={val ?? ""}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={handleSave}
+        onKeyDown={(e) => { if (e.key === "Enter") handleSave(); if (e.key === "Escape") { setVal(value); onCancelEdit(); } }}
+        style={{ width: 84, padding: "6px 8px", borderRadius: 8, border: "2px solid var(--p-color-border-focus)", font: "inherit", textAlign: "right" }}
+      />
     );
   }
-
+  const empty = value === "" || value === null || value === undefined;
   return (
-    <div
+    <button
+      type="button"
       onClick={onStartEdit}
-      title="Click to edit"
+      title="Zum Bearbeiten klicken"
       style={{
-        cursor: "pointer", padding: "4px 6px", borderRadius: 6,
-        border: "1px solid #e1e3e5", transition: "all 0.15s",
-        display: "inline-block", minWidth: 60, background: "#f6f6f7",
-        height: "30px", textAlign: "center",
+        minWidth: 84, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--p-color-border)", background: "var(--p-color-bg-surface)",
+        cursor: "text", textAlign: "right", font: "inherit", fontWeight: strong ? 650 : 450,
+        color: tone === "critical" ? "var(--p-color-text-critical)" : empty ? "var(--p-color-text-secondary)" : "var(--p-color-text)",
       }}
-      onMouseEnter={(e) => { e.currentTarget.style.border = "1px solid #bbb"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.border = "1px solid #e1e3e5"; }}
+      onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--p-color-border-hover)")}
+      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--p-color-border)")}
     >
-      {value ?? "—"}
+      {empty ? placeholder : value}
+    </button>
+  );
+}
+
+function Stat({ label, value, tone, active, onClick, hint }) {
+  return (
+    <div onClick={onClick} style={{ cursor: "pointer", borderRadius: 12, outline: active ? "2px solid var(--p-color-border-emphasis)" : "none" }}>
+      <Card>
+        <BlockStack gap="100">
+          <Text as="p" variant="bodySm" tone="subdued">{label}</Text>
+          <Text as="p" variant="heading2xl" tone={tone}>{value}</Text>
+          {hint && <Text as="p" variant="bodySm" tone="subdued">{hint}</Text>}
+        </BlockStack>
+      </Card>
     </div>
   );
 }
 
-
 /* =======================
-   MAIN COMPONENT
-   Eine Zeile je Variante mit Außenlager-Wert.
-   "Hauptlager" = Shopify inventoryQuantity der Variante.
+   SEITE – eine Zeile je Variante mit Außenlager.
+   „Hauptlager“ = Shopify-Bestand der Variante.
 ======================= */
 export default function Index() {
-  const {
-    rows, totalCount, unfilteredCount, totalPages, currentPage, q, limit, filterType,
-    vendor, vendors,
-  } = useLoaderData();
-  const navigate   = useNavigate();
-  const submit     = useSubmit();
+  const { rows, totalCount, unfilteredCount, redCount, orangeCount, totalPages, currentPage, q, limit, filterType, vendor, vendors } = useLoaderData();
+  const navigate = useNavigate();
+  const submit = useSubmit();
   const navigation = useNavigation();
+  const busy = navigation.state !== "idle";
 
-  const isPageLoading =
-    navigation.state === "loading" || navigation.state === "submitting";
-
-  const [editingCell,    setEditingCell]    = useState(null);
+  const [editingCell, setEditingCell] = useState(null);
   const [tempWarehouse2, setTempWarehouse2] = useState({});
-  const [search,         setSearch]         = useState(q || "");
-
+  const [search, setSearch] = useState(q || "");
   useEffect(() => setSearch(q || ""), [q]);
 
   const buildUrl = ({ q: qVal, page: pg, limit: lim, filter: flt, vendor: vnd }) => {
     const sp = new URLSearchParams();
     if (qVal) sp.set("q", qVal);
-    sp.set("page",   String(pg  ?? currentPage));
-    sp.set("limit",  String(lim ?? limit));
+    sp.set("page", String(pg ?? currentPage));
+    sp.set("limit", String(lim ?? limit));
     sp.set("filter", String(flt ?? filterType));
     const vndVal = vnd ?? vendor;
     if (vndVal) sp.set("vendor", vndVal);
     return `?${sp.toString()}`;
   };
 
-  const isEditing  = (id, field) => editingCell?.id === id && editingCell?.field === field;
-  const startEdit  = (id, field) => setEditingCell({ id, field });
+  const isEditing = (id, field) => editingCell?.id === id && editingCell?.field === field;
+  const startEdit = (id, field) => setEditingCell({ id, field });
   const cancelEdit = () => setEditingCell(null);
 
-  const saveInventoryByInventoryItem = (inventoryItemId, quantity) =>
-    submit({ type: "variant-inventory", inventoryItemId, quantity }, { method: "post" });
-
+  const saveInventoryByInventoryItem = (inventoryItemId, quantity) => submit({ type: "variant-inventory", inventoryItemId, quantity }, { method: "post" });
   const transferToAussenlager = (variantId, inventoryItemId, shopifyInventory, inputQty) => {
-    const newAussenlager = Number(inputQty);
-    // Allow 0 (to reset Außenlager); only block empty/non-numeric input
-    if (inputQty === "" || inputQty === null || inputQty === undefined || isNaN(newAussenlager)) return;
-    if (newAussenlager < 0) return;
-    submit(
-      {
-        type:             "transfer-to-aussenlager",
-        variantId,
-        inventoryItemId,
-        newAussenlager:   String(newAussenlager),
-        shopifyInventory: String(Number(shopifyInventory) || 0),
-      },
-      { method: "post" },
-    );
+    const n = Number(inputQty);
+    if (inputQty === "" || inputQty === null || inputQty === undefined || isNaN(n) || n < 0) return;
+    submit({ type: "transfer-to-aussenlager", variantId, inventoryItemId, newAussenlager: String(n), shopifyInventory: String(Number(shopifyInventory) || 0) }, { method: "post" });
     setTempWarehouse2((prev) => ({ ...prev, [variantId]: "" }));
   };
+  const saveMelde = (variantId, melde) => submit({ type: "update-melde", variantId, melde: String(melde || "0") }, { method: "post" });
 
-  const saveMelde = (variantId, melde) =>
-    submit({ type: "update-melde", variantId, melde: String(melde || "0") }, { method: "post" });
+  const go = (patch) => navigate(buildUrl({ q: q || "", page: 1, ...patch }));
 
   return (
-    <>
-      {isPageLoading && (
-        <div style={{
-          position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh",
-          background: "rgba(0,0,0,0.4)", display: "flex",
-          alignItems: "center", justifyContent: "center", zIndex: 9999,
-        }}>
-          <div style={{
-            background: "#fff", padding: "40px 60px", borderRadius: 16,
-            boxShadow: "0 10px 30px rgba(0,0,0,0.2)", textAlign: "center",
-          }}>
-            <Spinner size="large" />
-            <div style={{ marginTop: 16, fontSize: 16, fontWeight: 500 }}>Bitte warten...</div>
-          </div>
-        </div>
-      )}
+    <Page
+      title="Außenlager"
+      subtitle="Hauptlager, Außenlager und Meldebestand je Sorte – Werte direkt in der Tabelle anklicken und ändern"
+      titleMetadata={busy ? <Spinner size="small" /> : null}
+    >
+      <BlockStack gap="400">
+        <InlineGrid columns={{ xs: 1, md: 3 }} gap="300">
+          <Stat label="Sorten mit Außenlager" value={unfilteredCount} active={filterType === "none"} onClick={() => go({ filter: "none" })} hint="Alle anzeigen" />
+          <Stat label="Hauptlager ≤ Außenlager" value={redCount} tone={redCount ? "critical" : undefined} active={filterType === "lowMain"} onClick={() => go({ filter: "lowMain" })} hint="Umlagern ins Hauptlager" />
+          <Stat label="Hauptlager − Melde ≤ Außenlager" value={orangeCount} tone={orangeCount ? "caution" : undefined} active={filterType === "lowAfterReorder"} onClick={() => go({ filter: "lowAfterReorder" })} hint="Bald umlagern" />
+        </InlineGrid>
 
-      <Page title="Außenlager" subtitle="Hauptlager, Außenlager und Meldebestand je Variante">
-        <Card>
-          {/* ── SEARCH & FILTER ── */}
-          <div style={{ padding: 16, borderBottom: "1px solid #e1e3e5" }}>
-            <InlineStack gap="300" align="space-between">
-              <div style={{ flex: 1, minWidth: 280 }}>
+        <Card padding="0">
+          <Box padding="400">
+            <InlineStack gap="300" blockAlign="end" wrap>
+              <div style={{ flex: 1, minWidth: 260 }}>
                 <TextField
-                  label="Search" labelHidden
-                  placeholder='Suchen... (z.B. "Nike" oder "sku:ABC123")'
+                  label="Suche"
+                  labelHidden
+                  placeholder="Produkt, Hersteller oder sku:12345"
                   value={search}
                   onChange={setSearch}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter")
-                      navigate(buildUrl({ q: search.trim() || "", page: 1 }));
-                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") go({ q: search.trim() }); }}
                   clearButton
-                  onClearButtonClick={() => navigate(buildUrl({ q: "", page: 1 }))}
+                  onClearButtonClick={() => go({ q: "" })}
+                  autoComplete="off"
+                  connectedRight={<Button onClick={() => go({ q: search.trim() })}>Suchen</Button>}
                 />
               </div>
-              <InlineStack gap="200">
-                <Button variant="primary" onClick={() => navigate(buildUrl({ q: search.trim() || "", page: 1 }))}>
-                  Suchen
-                </Button>
-                <Button disabled={!q} onClick={() => navigate(buildUrl({ q: "", page: 1 }))}>
-                  Zurücksetzen
-                </Button>
-              </InlineStack>
+              <div style={{ minWidth: 200 }}>
+                <Select label="Hersteller" labelHidden options={[{ label: "Alle Hersteller", value: "" }, ...vendors.map((v) => ({ label: v, value: v }))]} value={vendor} onChange={(val) => go({ vendor: val })} />
+              </div>
+              <div style={{ minWidth: 120 }}>
+                <Select label="Pro Seite" labelHidden options={["10", "20", "30", "50"].map((v) => ({ label: `${v} pro Seite`, value: v }))} value={String(limit)} onChange={(val) => go({ limit: val })} />
+              </div>
             </InlineStack>
+          </Box>
 
-            <div style={{ marginTop: 10 }}>
-              <Text as="p" variant="bodySm" tone="subdued">
-                Zeigt jede Variante mit Außenlager-Wert · Sortiert nach Hersteller, Artikel, Hauptlager
-                {q ? <> | Suchbegriff: <strong>{q}</strong></> : null}
-              </Text>
-            </div>
-
-            <div style={{
-              marginTop: 16, display: "flex", gap: 16,
-              justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap",
-            }}>
-              <InlineStack gap="400" blockAlign="end">
-                <Select
-                  label="Hersteller"
-                  options={[
-                    { label: "--Alle--", value: "" },
-                    ...vendors.map((v) => ({ label: v, value: v })),
-                  ]}
-                  value={vendor}
-                  onChange={(val) => navigate(buildUrl({ q: q || "", page: 1, vendor: val }))}
-                />
-                <Select
-                  label="Filter"
-                  options={[
-                    { label: "Kein Filter",                                        value: "none" },
-                    { label: "🔴 Nur Hauptlager <= Außenlager",                    value: "lowMain" },
-                    { label: "🟠 Hauptlager minus Melde <= Außenlager",            value: "lowAfterReorder" },
-                  ]}
-                  value={filterType}
-                  onChange={(val) => navigate(buildUrl({ q: q || "", page: 1, filter: val }))}
-                />
-                <Select
-                  label="Produkte pro Seite"
-                  options={[
-                    { label: "10", value: "10" },
-                    { label: "20", value: "20" },
-                    { label: "30", value: "30" },
-                    { label: "50", value: "50" },
-                  ]}
-                  value={String(limit)}
-                  onChange={(val) => navigate(buildUrl({ q: q || "", page: 1, limit: val }))}
-                />
-              </InlineStack>
-              <div style={{ textAlign: "right" }}>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  {filterType === "none"
-                    ? `${totalCount} Artikel mit Außenlager`
-                    : `${totalCount} von ${unfilteredCount} Artikeln (gefiltert)`}
-                  {" "}· Seite {currentPage} / {totalPages}
-                </Text>
-              </div>
-            </div>
-          </div>
-
-          {/* ── TABLE ──
-              Columns (7 total):
-              Artikel | Hersteller | Hauptlager | Außenlager | Außenlager Neu | Meldebestand | Preis
-          */}
           <div style={{ overflowX: "auto" }}>
-            <table style={tableStyle}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
               <thead>
                 <tr>
-                  <th style={thStyle}>Artikel</th>
-                  <th style={thStyle}>Hersteller</th>
-                  <th style={thStyle}>Hauptlager</th>
-                  <th style={thStyle}>Außenlager</th>
-                  <th style={thStyle}>Außenlager Neu</th>
-                  <th style={thStyle}>Meldebestand (in VKE)</th>
-                  <th style={thStyle}>Preis</th>
+                  <th style={th}>Artikel</th>
+                  <th style={th}>Hersteller</th>
+                  <th style={{ ...th, textAlign: "right" }}>Hauptlager</th>
+                  <th style={{ ...th, textAlign: "right" }}>Außenlager</th>
+                  <th style={{ ...th, textAlign: "right" }}>Außenlager neu</th>
+                  <th style={{ ...th, textAlign: "right" }}>Meldebestand</th>
+                  <th style={th}>Status</th>
+                  <th style={{ ...th, textAlign: "right" }}>Preis</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <tr>
-                    <td colSpan="7" style={{ ...tdStyle, textAlign: "center" }}>
-                      <Text tone="subdued">Keine Produkte entsprechen diesem Filter</Text>
-                    </td>
-                  </tr>
+                  <tr><td colSpan="8" style={{ ...td, textAlign: "center", padding: 40 }}><Text tone="subdued" as="p">Keine Sorten für diese Auswahl.</Text></td></tr>
                 ) : (
                   rows.map(({ product, variant: vr }) => {
-                    const shopifyQty = Number(vr.inventoryQuantity) || 0;
-                    const meldeQty   = Number(vr.melde?.value) || 0;
-                    const isRedZone  = meldeQty > 0 && shopifyQty <= meldeQty;
-
+                    const main = Number(vr.inventoryQuantity) || 0;
+                    const ext = Number(vr.aussenlager?.value) || 0;
+                    const melde = Number(vr.melde?.value) || 0;
+                    const red = main <= ext;
+                    const orange = !red && main - melde <= ext;
                     return (
-                      <tr key={vr.id} style={{ background: isRedZone ? "rgba(255,0,0,0.08)" : "transparent" }}>
-                        <td style={{ ...tdStyle, minWidth: 240 }}>
-                          <Text as="p" variant="bodyMd">{product.title}</Text>
-                          {product.hasRealVariants && (
-                            <Text as="p" variant="bodyMd" fontWeight="semibold">{vr.title}</Text>
-                          )}
-                          {vr.sku && (
-                            <Text as="p" variant="bodySm" tone="subdued">SKU: {vr.sku}</Text>
-                          )}
-                        </td>
-                        <td style={{ ...tdStyle, minWidth: 160 }}>
-                          <Text as="p">{product.vendor || "—"}</Text>
-                        </td>
-                        {/* Hauptlager = Shopify inventoryQuantity (editable) */}
-                        <td style={{ ...tdStyle, minWidth: 110 }}>
-                          <InlineEditable
-                            value={String(vr.inventoryQuantity ?? "")}
-                            editing={isEditing(vr.id, "inventory")}
-                            onStartEdit={() => startEdit(vr.id, "inventory")}
-                            onCancelEdit={cancelEdit}
-                            onSave={(v) => saveInventoryByInventoryItem(vr.inventoryItem?.id, v)}
-                            type="number"
-                          />
-                        </td>
-                        <td style={{ ...tdStyle, minWidth: 110 }}>
-                          <Text as="p" tone="critical" fontWeight="semibold">{vr.aussenlager?.value ?? "—"}</Text>
-                        </td>
-                        <td style={{ ...tdStyle, minWidth: 155 }}>
-                          <InlineEditable
-                            value={tempWarehouse2[vr.id] ?? ""}
-                            editing={isEditing(vr.id, "warehouse2")}
-                            onStartEdit={() => startEdit(vr.id, "warehouse2")}
-                            onCancelEdit={cancelEdit}
-                            onSave={(v) =>
-                              transferToAussenlager(vr.id, vr.inventoryItem?.id, shopifyQty, v)
-                            }
-                            type="number"
-                          />
-                        </td>
-                        <td style={{ ...tdStyle, minWidth: 155 }}>
-                          <InlineStack gap="200" blockAlign="center">
-                            <InlineEditable
-                              value={vr.melde?.value ?? ""}
-                              editing={isEditing(vr.id, "melde")}
-                              onStartEdit={() => startEdit(vr.id, "melde")}
-                              onCancelEdit={cancelEdit}
-                              onSave={(v) => saveMelde(vr.id, v)}
-                              type="number"
-                            />
-                            {isRedZone && <Badge tone="critical">🔴 Rot</Badge>}
+                      <tr key={vr.id} style={{ background: red ? "var(--p-color-bg-surface-critical)" : orange ? "var(--p-color-bg-surface-caution)" : "transparent" }}>
+                        <td style={{ ...td, minWidth: 260 }}>
+                          <InlineStack gap="300" blockAlign="center" wrap={false}>
+                            <div style={{ width: 40, height: 40, borderRadius: 8, overflow: "hidden", background: "var(--p-color-bg-surface-secondary)", flexShrink: 0, border: "1px solid var(--p-color-border-secondary)" }}>
+                              {product.image && <img src={`${product.image}${product.image.includes("?") ? "&" : "?"}width=80`} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />}
+                            </div>
+                            <BlockStack gap="050">
+                              <Text as="span" fontWeight="semibold">{product.title}</Text>
+                              <Text as="span" variant="bodySm" tone="subdued">
+                                {product.hasRealVariants ? `${vr.title} · ` : ""}{vr.sku ? `SKU ${vr.sku}` : ""}
+                              </Text>
+                            </BlockStack>
                           </InlineStack>
                         </td>
-                        <td style={{ ...tdStyle, minWidth: 90 }}>
-                          <Text as="p">{vr.price ? `€${vr.price}` : "—"}</Text>
+                        <td style={{ ...td, whiteSpace: "nowrap" }}><Text as="span" tone="subdued">{product.vendor || "–"}</Text></td>
+                        <td style={{ ...td, textAlign: "right" }}>
+                          <InlineEditable value={String(vr.inventoryQuantity ?? "")} editing={isEditing(vr.id, "inventory")} onStartEdit={() => startEdit(vr.id, "inventory")} onCancelEdit={cancelEdit} onSave={(v) => saveInventoryByInventoryItem(vr.inventoryItem?.id, v)} type="number" />
+                        </td>
+                        <td style={{ ...td, textAlign: "right" }}>
+                          <Text as="span" tone="critical" fontWeight="bold">{vr.aussenlager?.value ?? "–"}</Text>
+                        </td>
+                        <td style={{ ...td, textAlign: "right" }}>
+                          <InlineEditable value={tempWarehouse2[vr.id] ?? ""} placeholder="neu …" editing={isEditing(vr.id, "warehouse2")} onStartEdit={() => startEdit(vr.id, "warehouse2")} onCancelEdit={cancelEdit} onSave={(v) => transferToAussenlager(vr.id, vr.inventoryItem?.id, main, v)} type="number" />
+                        </td>
+                        <td style={{ ...td, textAlign: "right" }}>
+                          <InlineEditable value={vr.melde?.value ?? ""} editing={isEditing(vr.id, "melde")} onStartEdit={() => startEdit(vr.id, "melde")} onCancelEdit={cancelEdit} onSave={(v) => saveMelde(vr.id, v)} type="number" />
+                        </td>
+                        <td style={td}>
+                          {red ? <Badge tone="critical">Umlagern</Badge> : orange ? <Badge tone="warning">Bald umlagern</Badge> : <Badge tone="success">OK</Badge>}
+                        </td>
+                        <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                          <Text as="span">{vr.price ? `${Number(vr.price).toFixed(2).replace(".", ",")} €` : "–"}</Text>
                         </td>
                       </tr>
                     );
@@ -889,28 +792,22 @@ export default function Index() {
             </table>
           </div>
 
-          <br />
-
-          <InlineStack align="space-between" gap="300">
-            <Button
-              disabled={currentPage <= 1}
-              onClick={() => { cancelEdit(); navigate(buildUrl({ q: q || "", page: currentPage - 1 })); }}
-            >
-              Vorherige
-            </Button>
-            <Text as="p" variant="bodySm" tone="subdued">
-              Seite {currentPage} von {totalPages} · {totalCount} Artikel · {limit} pro Seite
-            </Text>
-            <Button
-              disabled={currentPage >= totalPages}
-              variant="primary"
-              onClick={() => { cancelEdit(); navigate(buildUrl({ q: q || "", page: currentPage + 1 })); }}
-            >
-              Nächste
-            </Button>
-          </InlineStack>
+          <Box padding="300">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="p" variant="bodySm" tone="subdued">
+                {filterType === "none" ? `${totalCount} Sorten` : `${totalCount} von ${unfilteredCount} Sorten`}{q ? ` · Suche „${q}“` : ""} · sortiert nach Hersteller, Artikel, Hauptlager
+              </Text>
+              <Pagination
+                hasPrevious={currentPage > 1}
+                hasNext={currentPage < totalPages}
+                label={`Seite ${currentPage} von ${totalPages}`}
+                onPrevious={() => { cancelEdit(); navigate(buildUrl({ q: q || "", page: currentPage - 1 })); }}
+                onNext={() => { cancelEdit(); navigate(buildUrl({ q: q || "", page: currentPage + 1 })); }}
+              />
+            </InlineStack>
+          </Box>
         </Card>
-      </Page>
-    </>
+      </BlockStack>
+    </Page>
   );
 }

@@ -11,7 +11,6 @@ export const PRODUCT_TEXT_FIELDS = [
   { key: "zusatzinformationen", label: "Verzehrempfehlung", type: "single_line_text_field", multiline: 3 },
   { key: "eigenschaften", label: "Eigenschaften", type: "single_line_text_field", help: "z. B. Vegan, Glutenfrei, Laktosefrei" },
   { key: "hinweistext", label: "Hinweistext", type: "multi_line_text_field", multiline: 3 },
-  { key: "herstellerinformation", label: "Herstellerinformation (GPSR)", type: "single_line_text_field", multiline: 2, help: "Name und Anschrift des Herstellers – Pflichtangabe" },
   { key: "rabatt", label: "Marketing-Beschreibung", type: "single_line_text_field", multiline: 2 },
 ];
 
@@ -22,12 +21,18 @@ export const PRODUCT_EXPORT_FIELDS = [
   { key: "idealo", label: "idealo", type: "boolean", kind: "bool" },
   { key: "google_product_category", label: "Google-Produktkategorie", type: "single_line_text_field" },
   { key: "idealo_category", label: "idealo-Kategorie", type: "single_line_text_field" },
+  { key: "herstellerinformation", label: "Herstellerinformation (GPSR)", type: "single_line_text_field" },
   { key: "google_custom_label_0", label: "Google Label 0", type: "single_line_text_field" },
   { key: "google_custom_label_1", label: "Google Label 1", type: "single_line_text_field" },
   { key: "google_custom_label_2", label: "Google Label 2", type: "single_line_text_field" },
 ];
 
-export const PRODUCT_METAFIELDS = [...PRODUCT_TEXT_FIELDS, ...PRODUCT_EXPORT_FIELDS];
+// Werden automatisch gesetzt (Hersteller-Auswahl bzw. Label-Regeln), nicht als Freitext angezeigt
+export const PRODUCT_AUTO_FIELDS = [
+  { key: "hersteller", label: "Hersteller (Metaobjekt)", type: "metaobject_reference" },
+];
+
+export const PRODUCT_METAFIELDS = [...PRODUCT_TEXT_FIELDS, ...PRODUCT_EXPORT_FIELDS, ...PRODUCT_AUTO_FIELDS];
 
 // Varianten-Metafelder, die direkt bearbeitet werden (Preis-JSONs werden separat gepflegt)
 export const VARIANT_METAFIELDS = [
@@ -81,4 +86,38 @@ export function checkProduct(p) {
   }
   for (const [ean, n] of Object.entries(eans)) if (n > 1) add("critical", `EAN ${ean} ist ${n}× vergeben`);
   return issues;
+}
+
+// Google-Labels nach den im Shop gelebten Regeln (aus 1.330 Produkten abgeleitet):
+//   Label 0 = Rohertrag je Stück (Preis − EK): < 9 € niedrig, < 15 € mittel, sonst hoch
+//   Label 1 = Abverkauf (wird nicht verändert, neue Produkte: „kein“)
+//   Label 2 = Preisklasse: < 10 € niedrig, < 30 € mittel, sonst hoch
+export const LABEL_RULES = { marginMid: 9, marginHigh: 15, priceMid: 10, priceHigh: 30 };
+
+export function computeLabels(variants, current = {}) {
+  const priced = (variants || []).map((v) => ({ price: num(v.price), cost: num(v.cost) })).filter((v) => v.price);
+  if (!priced.length) return { ...current };
+  const cheapest = priced.reduce((a, b) => (b.price < a.price ? b : a));
+  const margin = cheapest.cost !== null ? cheapest.price - cheapest.cost : null;
+  const l0 = margin === null ? current.google_custom_label_0 || "niedrig" : margin < LABEL_RULES.marginMid ? "niedrig" : margin < LABEL_RULES.marginHigh ? "mittel" : "hoch";
+  const l2 = cheapest.price < LABEL_RULES.priceMid ? "niedrig" : cheapest.price < LABEL_RULES.priceHigh ? "mittel" : "hoch";
+  return { google_custom_label_0: l0, google_custom_label_1: current.google_custom_label_1 || "kein", google_custom_label_2: l2 };
+}
+
+export const slugify = (s) =>
+  String(s || "")
+    .toLowerCase()
+    .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+
+const clean = (t) => String(t || "").replace(/\s+-\s+/g, " ").replace(/\s+/g, " ").trim();
+
+export function seoSuggestion(title, vendor) {
+  const t = clean(title);
+  const seoTitle = `${t} günstig kaufen | Sportnahrung Kwax`.length <= 70 ? `${t} günstig kaufen | Sportnahrung Kwax` : `${t} | Sportnahrung Kwax`.slice(0, 70);
+  const seoDescription = `${t} jetzt bei Sportnahrung Kwax günstig bestellen${vendor ? ` – Original von ${vendor}` : ""}. Schneller Versand und faire Preise.`.slice(0, 160);
+  return { seoTitle, seoDescription, handle: slugify(title) };
 }
