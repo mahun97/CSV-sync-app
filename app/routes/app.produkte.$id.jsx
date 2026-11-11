@@ -297,11 +297,23 @@ function Cell({ value, onChange, placeholder, align = "left", invalid, width }) 
 
 function VariantTable({ variants, isNew, optionName, setOptionName, onChange, onAdd, onRemove, onMore, onApplyFirst }) {
   const head = { fontSize: 12, color: "var(--p-color-text-secondary)", fontWeight: 600, padding: "0 4px 6px", textAlign: "left", whiteSpace: "nowrap" };
-  const td = { padding: "6px 4px", verticalAlign: "middle" };
+  const td = { padding: "6px 4px", verticalAlign: "middle", overflow: "hidden" };
   return (
     <BlockStack gap="300">
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 940, tableLayout: "fixed" }}>
+          <colgroup>
+            <col />
+            <col style={{ width: 120 }} />
+            <col style={{ width: 140 }} />
+            <col style={{ width: 82 }} />
+            <col style={{ width: 82 }} />
+            <col style={{ width: 118 }} />
+            <col style={{ width: 76 }} />
+            <col style={{ width: 76 }} />
+            <col style={{ width: 76 }} />
+            <col style={{ width: 76 }} />
+          </colgroup>
           <thead>
             <tr>
               <th style={head}>{optionName || "Sorte"}</th>
@@ -325,24 +337,30 @@ function VariantTable({ variants, isNew, optionName, setOptionName, onChange, on
               const setMeta = (k) => (val) => onChange(i, { ...v, meta: { ...v.meta, [k]: val } });
               return (
                 <tr key={v.id || `n${i}`} style={{ borderTop: "1px solid var(--p-color-border-secondary)" }}>
-                  <td style={{ ...td, minWidth: 150 }}>
+                  <td style={{ ...td }}>
                     {v.id ? (
                       <Text as="span" fontWeight="semibold">{v.title === "Default Title" ? "Standard" : v.title}</Text>
                     ) : (
                       <Cell value={v.option} onChange={set("option")} placeholder="z. B. Schoko" />
                     )}
                   </td>
-                  <td style={{ ...td, width: 120 }}><Cell value={v.sku} onChange={set("sku")} invalid={!v.sku} /></td>
-                  <td style={{ ...td, width: 135 }}><Cell value={v.barcode} onChange={set("barcode")} invalid={v.barcode && !/^\d{8,14}$/.test(v.barcode.trim())} /></td>
-                  <td style={{ ...td, width: 80 }}><Cell value={v.price} onChange={set("price")} align="right" invalid={!num(v.price)} /></td>
-                  <td style={{ ...td, width: 80 }}><Cell value={v.cost} onChange={set("cost")} align="right" /></td>
-                  <td style={{ ...td, width: 110 }}>
-                    {m ? <Badge tone={m.diff < 0 ? "critical" : m.pct < 10 ? "warning" : "success"}>{`${m.diff.toFixed(2).replace(".", ",")} € · ${m.pct.toFixed(0)} %`}</Badge> : <Text as="span" tone="subdued">–</Text>}
+                  <td style={{ ...td }}><Cell value={v.sku} onChange={set("sku")} invalid={!v.sku} /></td>
+                  <td style={{ ...td }}><Cell value={v.barcode} onChange={set("barcode")} invalid={v.barcode && !/^\d{8,14}$/.test(v.barcode.trim())} /></td>
+                  <td style={{ ...td }}><Cell value={v.price} onChange={set("price")} align="right" invalid={!num(v.price)} /></td>
+                  <td style={{ ...td }}><Cell value={v.cost} onChange={set("cost")} align="right" /></td>
+                  <td style={{ ...td }}>
+                    {m ? (
+                      <span style={{
+                        display: "inline-block", whiteSpace: "nowrap", fontSize: 12, fontWeight: 600, padding: "3px 8px", borderRadius: 999,
+                        background: m.diff < 0 ? "var(--p-color-bg-fill-critical-secondary)" : m.pct < 10 ? "var(--p-color-bg-fill-caution-secondary)" : "var(--p-color-bg-fill-success-secondary)",
+                        color: m.diff < 0 ? "var(--p-color-text-critical)" : m.pct < 10 ? "var(--p-color-text-caution)" : "var(--p-color-text-success)",
+                      }}>{`${m.diff.toFixed(2).replace(".", ",")} € · ${m.pct.toFixed(0)} %`}</span>
+                    ) : <Text as="span" tone="subdued">–</Text>}
                   </td>
-                  <td style={{ ...td, width: 75 }}><Cell value={v.meta.omnia_min} onChange={setMeta("omnia_min")} align="right" invalid={min !== null && max !== null && min > max} /></td>
-                  <td style={{ ...td, width: 75 }}><Cell value={v.meta.omnia_max} onChange={setMeta("omnia_max")} align="right" invalid={min !== null && max !== null && min > max} /></td>
-                  <td style={{ ...td, width: 70 }}><Cell value={v.stock} onChange={set("stock")} align="right" /></td>
-                  <td style={{ ...td, width: 70, whiteSpace: "nowrap" }}>
+                  <td style={{ ...td }}><Cell value={v.meta.omnia_min} onChange={setMeta("omnia_min")} align="right" invalid={min !== null && max !== null && min > max} /></td>
+                  <td style={{ ...td }}><Cell value={v.meta.omnia_max} onChange={setMeta("omnia_max")} align="right" invalid={min !== null && max !== null && min > max} /></td>
+                  <td style={{ ...td }}><Cell value={v.stock} onChange={set("stock")} align="right" /></td>
+                  <td style={{ ...td, whiteSpace: "nowrap" }}>
                     <Tooltip content="Weitere Felder"><Button size="slim" variant="tertiary" icon={EditIcon} onClick={() => onMore(i)} accessibilityLabel="Weitere Felder" /></Tooltip>
                     {variants.length > 1 && (
                       <Tooltip content="Sorte entfernen"><Button size="slim" variant="tertiary" tone="critical" icon={DeleteIcon} onClick={() => onRemove(i)} accessibilityLabel="Entfernen" /></Tooltip>
