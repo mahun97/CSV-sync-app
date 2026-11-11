@@ -31,7 +31,7 @@ import { AlertCircleIcon, AlertTriangleIcon, InfoIcon, CheckCircleIcon, DeleteIc
 import { authenticate } from "../shopify.server";
 import prisma from "../db.server";
 import { VARIANT_METAFIELDS, checkProduct, computeLabels, seoSuggestion, num } from "../lib/productFields";
-import { loadProduct, loadLocations, saveProduct, createProduct } from "../lib/products.server";
+import { loadProduct, loadLocations, saveProduct, createProduct, resolveSkus } from "../lib/products.server";
 import { getCatalog } from "../lib/catalog.server";
 import { tagsForCategory, TAX_TAGS, SHIPPING_TAGS, SPECIAL_TAGS } from "../lib/catalogShared";
 import RichTextEditor, { HtmlPreview } from "../components/RichTextEditor";
@@ -50,6 +50,8 @@ const emptyVariant = (extra = {}) => ({
   compareAtPrice: "",
   cost: "",
   stock: "",
+  weight: "",
+  imageId: "",
   meta: Object.fromEntries(VARIANT_METAFIELDS.map((f) => [f.key, ""])),
   ...extra,
 });
@@ -71,6 +73,8 @@ function emptyProduct() {
     meta: {
       bezeichnung: "", inhalt: "", gewicht: "", grundpreis: "", zutaten: "", n_hrwerte: "", allergiehinweis: "",
       zusatzinformationen: "", eigenschaften: "", hinweistext: "", herstellerinformation: "", rabatt: "",
+      verzehrempfehlung: "", hinweis: "", aminos_urenprofil: "", aminosaurenprofil_text: "", textilkennzeichen: "", gr_entabelle: "",
+      content: "", content2: "", content3: "", crosssell1: "", crosssell2: "", crosssell3: "", crosssell4: "", crosssell5: "",
       export_repricer: "1", google_shopping_de: "true", google_shopping_at: "true", idealo: "true",
       google_product_category: "", idealo_category: "", google_custom_label_0: "", google_custom_label_1: "kein", google_custom_label_2: "", hersteller: "",
     },
@@ -133,12 +137,15 @@ export const loader = async ({ request, params }) => {
               price: v.price,
               cost: v.cost,
               compareAtPrice: v.compareAtPrice,
+              weight: v.weight,
               meta: {
                 ...emptyVariant().meta,
                 omnia_min: v.meta.omnia_min,
                 omnia_max: v.meta.omnia_max,
                 google_unit_pricing_measure: v.meta.google_unit_pricing_measure,
                 google_unit_pricing_base_measure: v.meta.google_unit_pricing_base_measure,
+                varianteninhalt: v.meta.varianteninhalt,
+                variantengewicht: v.meta.variantengewicht,
               },
             }),
           ),
@@ -162,7 +169,8 @@ export const loader = async ({ request, params }) => {
     }
     const s = seoSuggestion(product.title, product.vendor);
     product = { ...product, handle: s.handle, seoTitle: s.seoTitle, seoDescription: s.seoDescription };
-    return json({ mode: "edit", isNew: true, product, media, catalog, history: [], storeHandle, origin, seoSync: true });
+    const crossInfo = await resolveSkus(admin, [1, 2, 3, 4, 5].map((i) => product.meta[`crosssell${i}`]));
+    return json({ mode: "edit", isNew: true, product, media, catalog, history: [], storeHandle, origin, seoSync: true, crossInfo });
   }
 
   const loaded = await loadProduct(admin, gidOf(params.id));
@@ -176,7 +184,8 @@ export const loader = async ({ request, params }) => {
     });
   } catch {}
   const media = loaded.product.images.map((i) => ({ key: i.id, id: i.id, url: i.url, kind: "existing" }));
-  return json({ mode: "edit", isNew: false, product: loaded.product, media, catalog, history, storeHandle, origin: null, seoSync: !loaded.product.seoTitle });
+  const crossInfo = await resolveSkus(admin, [1, 2, 3, 4, 5].map((i) => loaded.product.meta[`crosssell${i}`]));
+  return json({ mode: "edit", isNew: false, product: loaded.product, media, catalog, history, storeHandle, origin: null, seoSync: !loaded.product.seoTitle, crossInfo });
 };
 
 export const action = async ({ request, params }) => {
@@ -212,7 +221,7 @@ function StartScreen({ catalog, results, suche }) {
           <Card>
             <BlockStack gap="300">
               <InlineStack gap="200" blockAlign="center"><Icon source={DuplicateIcon} tone="base" /><Text as="h2" variant="headingMd">Ähnliches Produkt kopieren</Text></InlineStack>
-              <Text as="p" tone="subdued">Texte, Sorten, Preise, Kategorie und Bilder übernehmen – nur Titel, SKU und EAN anpassen. SEO und URL werden aus dem Titel erzeugt.</Text>
+              <Text as="p" tone="subdued">Texte, Geschmäcker, Preise, Kategorie und Bilder übernehmen – nur Titel, SKU und EAN anpassen. SEO und URL werden aus dem Titel erzeugt.</Text>
               <TextField label="Produkt suchen" labelHidden placeholder="Titel oder SKU …" value={q} onChange={setQ} prefix={<Icon source={SearchIcon} />} autoComplete="off"
                 connectedRight={<Button onClick={() => navigate(`/app/produkte/neu?suche=${encodeURIComponent(q)}`)}>Suchen</Button>} />
             </BlockStack>
@@ -245,7 +254,7 @@ function StartScreen({ catalog, results, suche }) {
                     </div>
                     <BlockStack gap="050">
                       <Text as="span" fontWeight="semibold">{r.title}</Text>
-                      <Text as="span" variant="bodySm" tone="subdued">{r.vendor} · {r.variantsCount?.count} Sorten</Text>
+                      <Text as="span" variant="bodySm" tone="subdued">{r.vendor} · {r.variantsCount?.count} Geschmäcker</Text>
                     </BlockStack>
                   </InlineStack>
                   <Button onClick={() => navigate(`/app/produkte/neu?from=${r.id.split("/").pop()}`)}>Als Vorlage nehmen</Button>
@@ -317,7 +326,7 @@ function VariantTable({ variants, isNew, optionName, setOptionName, onChange, on
           </colgroup>
           <thead>
             <tr>
-              <th style={head}>{optionName || "Sorte"}</th>
+              <th style={head}>{optionName || "Geschmack"}</th>
               <th style={head}>SKU</th>
               <th style={head}>EAN</th>
               <th style={{ ...head, textAlign: "right" }}>Preis €</th>
@@ -364,7 +373,7 @@ function VariantTable({ variants, isNew, optionName, setOptionName, onChange, on
                   <td style={{ ...td, whiteSpace: "nowrap" }}>
                     <Tooltip content="Weitere Felder"><Button size="slim" variant="tertiary" icon={EditIcon} onClick={() => onMore(i)} accessibilityLabel="Weitere Felder" /></Tooltip>
                     {variants.length > 1 && (
-                      <Tooltip content="Sorte entfernen"><Button size="slim" variant="tertiary" tone="critical" icon={DeleteIcon} onClick={() => onRemove(i)} accessibilityLabel="Entfernen" /></Tooltip>
+                      <Tooltip content="Geschmack entfernen"><Button size="slim" variant="tertiary" tone="critical" icon={DeleteIcon} onClick={() => onRemove(i)} accessibilityLabel="Entfernen" /></Tooltip>
                     )}
                   </td>
                 </tr>
@@ -375,7 +384,7 @@ function VariantTable({ variants, isNew, optionName, setOptionName, onChange, on
       </div>
       <InlineStack align="space-between" blockAlign="center" gap="200">
         <InlineStack gap="200">
-          <Button icon={PlusIcon} onClick={onAdd}>Sorte hinzufügen</Button>
+          <Button icon={PlusIcon} onClick={onAdd}>Geschmack hinzufügen</Button>
           {variants.length > 1 && <Button variant="tertiary" onClick={onApplyFirst}>Preis, EK und Min/Max der ersten Zeile für alle übernehmen</Button>}
         </InlineStack>
         {isNew && (
@@ -450,16 +459,17 @@ function GooglePreview({ title, description, handle }) {
 }
 
 const TEXT_TABS = [
-  { id: "inhalt", content: "Inhalt & Zutaten", fields: [["bezeichnung", "Bezeichnung (Sachbezeichnung)", "html"], ["inhalt", "Inhalt", "html"], ["zutaten", "Zutaten", "html"]], plain: [["gewicht", "Gewicht"], ["grundpreis", "Grundpreis-Text"]] },
-  { id: "naehr", content: "Nährwerte & Allergene", fields: [["n_hrwerte", "Nährwerte", "html"], ["allergiehinweis", "Allergiehinweis", "html"]] },
-  { id: "verzehr", content: "Verzehr & Hinweise", fields: [["zusatzinformationen", "Verzehrempfehlung", "html"], ["hinweistext", "Hinweistext", "html"]], plain: [["eigenschaften", "Eigenschaften (z. B. Vegan, Glutenfrei)"]] },
-  { id: "marketing", content: "Marketing", fields: [["rabatt", "Marketing-Beschreibung", "html"]] },
+  { id: "inhalt", content: "Inhalt & Zutaten", fields: [["bezeichnung", "Bezeichnung (Sachbezeichnung)"], ["inhalt", "Inhalt"], ["zutaten", "Zutaten"]], plain: [["gewicht", "Gewicht"], ["grundpreis", "Grundpreis-Text"]] },
+  { id: "naehr", content: "Nährwerte & Allergene", fields: [["n_hrwerte", "Nährwerte"], ["allergiehinweis", "Allergiehinweis"], ["aminos_urenprofil", "Aminosäurenprofil (Tabelle)"], ["aminosaurenprofil_text", "Aminosäurenprofil (Text)"]] },
+  { id: "verzehr", content: "Verzehr & Hinweise", fields: [["zusatzinformationen", "Verzehrempfehlung"], ["verzehrempfehlung", "Verzehrempfehlung 2"], ["hinweis", "Warnhinweis (z. B. Farbstoffe, Dosierung)"], ["hinweistext", "Hinweistext"]], plain: [["eigenschaften", "Eigenschaften (z. B. Vegan, Glutenfrei)"]] },
+  { id: "marketing", content: "Marketing", fields: [["rabatt", "Marketing-Beschreibung"]] },
+  { id: "bekleidung", content: "Bekleidung", fields: [["textilkennzeichen", "Textilkennzeichnung"], ["gr_entabelle", "Größentabelle"]] },
 ];
 
 /* ---------- Editor ---------- */
 
 function Editor() {
-  const { isNew, product: initial, media: initialMedia, catalog, history, storeHandle, origin, seoSync: initialSeoSync } = useLoaderData();
+  const { isNew, product: initial, media: initialMedia, catalog, history, storeHandle, origin, seoSync: initialSeoSync, crossInfo = {} } = useLoaderData();
   const actionData = useActionData();
   const navigate = useNavigate();
   const submit = useSubmit();
@@ -527,11 +537,11 @@ function Editor() {
   const setVariant = (i, v) => update({ variants: p.variants.map((x, j) => (j === i ? v : x)) });
   const addVariant = () => {
     const first = p.variants[0];
-    update({ variants: [...p.variants, emptyVariant({ price: first?.price || "", cost: first?.cost || "", meta: { ...emptyVariant().meta, omnia_min: first?.meta.omnia_min || "", omnia_max: first?.meta.omnia_max || "", google_unit_pricing_measure: first?.meta.google_unit_pricing_measure || "", google_unit_pricing_base_measure: first?.meta.google_unit_pricing_base_measure || "" } })] });
+    update({ variants: [...p.variants, emptyVariant({ price: first?.price || "", cost: first?.cost || "", weight: first?.weight || "", meta: { ...emptyVariant().meta, omnia_min: first?.meta.omnia_min || "", omnia_max: first?.meta.omnia_max || "", google_unit_pricing_measure: first?.meta.google_unit_pricing_measure || "", google_unit_pricing_base_measure: first?.meta.google_unit_pricing_base_measure || "" } })] });
   };
   const removeVariant = (i) => {
     const v = p.variants[i];
-    if (v.id && !window.confirm(`Sorte „${v.title}“ beim Speichern wirklich löschen?`)) return;
+    if (v.id && !window.confirm(`Geschmack „${v.title}“ beim Speichern wirklich löschen?`)) return;
     update({ variants: p.variants.filter((_, j) => j !== i) });
   };
   const applyFirst = () => {
@@ -586,7 +596,7 @@ function Editor() {
         <Card>
           <BlockStack gap="300">
             <InlineStack align="space-between" blockAlign="center">
-              <Text as="h2" variant="headingMd">Sorten, Preise & Omnia</Text>
+              <Text as="h2" variant="headingMd">Geschmäcker, Preise & Omnia</Text>
               <Text as="span" variant="bodySm" tone="subdued">Preis = Google, idealo und Shop · Min/Max = Grenzen für Omnia</Text>
             </InlineStack>
             <VariantTable
@@ -637,6 +647,34 @@ function Editor() {
                     ))}
                   </BlockStack>
                 </Box>
+              </Card>
+
+              <Card>
+                <BlockStack gap="400">
+                  <Text as="h2" variant="headingMd">Downloads & passende Produkte</Text>
+                  <BlockStack gap="200">
+                    <Text as="h3" variant="headingSm">Etiketten / Downloads (PDF-Links)</Text>
+                    {["content", "content2", "content3"].map((k, i) => (
+                      <TextField key={k} label={`Download ${i + 1}`} labelHidden placeholder={`Download ${i + 1}: https://cdn.shopify.com/…/etikett.pdf`} value={p.meta[k] || ""} onChange={setMeta(k)} autoComplete="off"
+                        connectedRight={p.meta[k] ? <Button url={p.meta[k]} external>Öffnen</Button> : undefined} />
+                    ))}
+                    <Text as="p" variant="bodySm" tone="subdued">PDFs in Shopify unter Inhalt › Dateien hochladen und den Link hier einfügen.</Text>
+                  </BlockStack>
+                  <Divider />
+                  <BlockStack gap="200">
+                    <Text as="h3" variant="headingSm">Passende Produkte (Cross-Selling, per SKU)</Text>
+                    <InlineGrid columns={{ xs: 1, md: 2 }} gap="300">
+                      {[1, 2, 3, 4, 5].map((i) => {
+                        const k = `crosssell${i}`;
+                        const info = crossInfo[String(p.meta[k] || "").trim()];
+                        return (
+                          <TextField key={k} label={`Produkt ${i}`} placeholder="SKU, z. B. 815-1-2" value={p.meta[k] || ""} onChange={setMeta(k)} autoComplete="off"
+                            helpText={p.meta[k] ? (info ? info.title : initial.meta[k] === p.meta[k] ? "SKU nicht gefunden" : "wird beim Speichern geprüft") : undefined} />
+                        );
+                      })}
+                    </InlineGrid>
+                  </BlockStack>
+                </BlockStack>
               </Card>
 
               <Card>
@@ -801,7 +839,7 @@ function Editor() {
       <Modal
         open={mv !== null}
         onClose={() => setMoreIndex(null)}
-        title={mv ? `Weitere Angaben · ${mv.id ? (mv.title === "Default Title" ? "Standard" : mv.title) : mv.option || "neue Sorte"}` : ""}
+        title={mv ? `Weitere Angaben · ${mv.id ? (mv.title === "Default Title" ? "Standard" : mv.title) : mv.option || "neuer Geschmack"}` : ""}
         primaryAction={{ content: "Fertig", onAction: () => setMoreIndex(null) }}
       >
         {mv && (
@@ -813,7 +851,27 @@ function Editor() {
               <TextField label="Meldebestand" type="number" value={String(mv.meta.melde ?? "")} onChange={(v) => setVariant(moreIndex, { ...mv, meta: { ...mv.meta, melde: v } })} autoComplete="off" />
               <TextField label="Grundpreis-Menge" placeholder="z. B. 1000 g" value={mv.meta.google_unit_pricing_measure} onChange={(v) => setVariant(moreIndex, { ...mv, meta: { ...mv.meta, google_unit_pricing_measure: v } })} autoComplete="off" />
               <TextField label="Grundpreis-Bezug" placeholder="z. B. 1 kg" value={mv.meta.google_unit_pricing_base_measure} onChange={(v) => setVariant(moreIndex, { ...mv, meta: { ...mv.meta, google_unit_pricing_base_measure: v } })} autoComplete="off" />
+              <TextField label="Versandgewicht" suffix="g" type="number" value={String(mv.weight ?? "")} onChange={(v) => setVariant(moreIndex, { ...mv, weight: v })} autoComplete="off" helpText="Für Versandkosten und Etiketten" />
+              <TextField label="Inhalt dieses Geschmacks" placeholder="z. B. Inhalt 2.040 Kg" value={mv.meta.varianteninhalt || ""} onChange={(v) => setVariant(moreIndex, { ...mv, meta: { ...mv.meta, varianteninhalt: v } })} autoComplete="off" helpText="Nur wenn abweichend vom Produkt" />
+              <TextField label="Gewicht-Text dieses Geschmacks" value={mv.meta.variantengewicht || ""} onChange={(v) => setVariant(moreIndex, { ...mv, meta: { ...mv.meta, variantengewicht: v } })} autoComplete="off" helpText="Nur wenn abweichend vom Produkt" />
             </InlineGrid>
+            {mv.id && (
+              <Box paddingBlockStart="400">
+                <BlockStack gap="200">
+                  <Text as="h3" variant="headingSm">Bild für diesen Geschmack</Text>
+                  <InlineStack gap="200">
+                    {media.filter((m) => m.kind === "existing").map((m) => (
+                      <div key={m.id} onClick={() => setVariant(moreIndex, { ...mv, imageId: mv.imageId === m.id ? "" : m.id })}
+                        style={{ width: 72, height: 72, borderRadius: 10, overflow: "hidden", cursor: "pointer", background: "var(--p-color-bg-surface-secondary)",
+                          border: mv.imageId === m.id ? "3px solid var(--p-color-border-emphasis)" : "1px solid var(--p-color-border)" }}>
+                        <img src={m.url} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                      </div>
+                    ))}
+                  </InlineStack>
+                  <Text as="p" variant="bodySm" tone="subdued">Wird im Shop angezeigt, wenn dieser Geschmack gewählt ist. Neue Bilder erst speichern, dann hier zuordnen.</Text>
+                </BlockStack>
+              </Box>
+            )}
             {mv.id && num(mv.shopPrice) !== null && (
               <Box paddingBlockStart="300"><Text as="p" variant="bodySm" tone="subdued">Aktueller Shop-Preis: {eur(mv.shopPrice)}</Text></Box>
             )}

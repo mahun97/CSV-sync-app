@@ -204,7 +204,7 @@ export default function Produkte() {
               resourceName={{ singular: "Produkt", plural: "Produkte" }}
               itemCount={products.length}
               selectable={false}
-              headings={[{ title: "" }, { title: "Produkt" }, { title: "Status" }, { title: "Sorten", alignment: "end" }, { title: "Bestand", alignment: "end" }, { title: "Preis", alignment: "end" }, { title: "Omnia" }, { title: "Hinweise" }]}
+              headings={[{ title: "" }, { title: "Produkt" }, { title: "Status" }, { title: "Geschmäcker", alignment: "end" }, { title: "Bestand", alignment: "end" }, { title: "Preis", alignment: "end" }, { title: "Omnia" }, { title: "Hinweise" }]}
             >
               {products.map((p, i) => {
                 const cats = categories.filter((c) => !c.parent && p.tags.includes(c.tag)).slice(0, 2);

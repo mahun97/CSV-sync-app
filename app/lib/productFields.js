@@ -12,6 +12,20 @@ export const PRODUCT_TEXT_FIELDS = [
   { key: "eigenschaften", label: "Eigenschaften", type: "single_line_text_field", help: "z. B. Vegan, Glutenfrei, Laktosefrei" },
   { key: "hinweistext", label: "Hinweistext", type: "multi_line_text_field", multiline: 3 },
   { key: "rabatt", label: "Marketing-Beschreibung", type: "single_line_text_field", multiline: 2 },
+  { key: "verzehrempfehlung", label: "Verzehrempfehlung 2", type: "single_line_text_field" },
+  { key: "hinweis", label: "Warnhinweis", type: "single_line_text_field" },
+  { key: "aminos_urenprofil", label: "Aminosäurenprofil (Tabelle)", type: "single_line_text_field" },
+  { key: "aminosaurenprofil_text", label: "Aminosäurenprofil (Text)", type: "single_line_text_field" },
+  { key: "textilkennzeichen", label: "Textilkennzeichnung", type: "single_line_text_field" },
+  { key: "gr_entabelle", label: "Größentabelle", type: "single_line_text_field" },
+  { key: "content", label: "Etikett / Download 1 (PDF-Link)", type: "single_line_text_field" },
+  { key: "content2", label: "Etikett / Download 2 (PDF-Link)", type: "single_line_text_field" },
+  { key: "content3", label: "Etikett / Download 3 (PDF-Link)", type: "single_line_text_field" },
+  { key: "crosssell1", label: "Passendes Produkt 1 (SKU)", type: "single_line_text_field" },
+  { key: "crosssell2", label: "Passendes Produkt 2 (SKU)", type: "single_line_text_field" },
+  { key: "crosssell3", label: "Passendes Produkt 3 (SKU)", type: "single_line_text_field" },
+  { key: "crosssell4", label: "Passendes Produkt 4 (SKU)", type: "single_line_text_field" },
+  { key: "crosssell5", label: "Passendes Produkt 5 (SKU)", type: "single_line_text_field" },
 ];
 
 export const PRODUCT_EXPORT_FIELDS = [
@@ -43,6 +57,8 @@ export const VARIANT_METAFIELDS = [
   { key: "melde", label: "Meldebestand", type: "number_integer" },
   { key: "google_unit_pricing_measure", label: "Grundpreis-Menge", type: "single_line_text_field" },
   { key: "google_unit_pricing_base_measure", label: "Grundpreis-Bezug", type: "single_line_text_field" },
+  { key: "varianteninhalt", label: "Inhalt dieses Geschmacks", type: "single_line_text_field" },
+  { key: "variantengewicht", label: "Gewicht-Text dieses Geschmacks", type: "single_line_text_field" },
 ];
 
 export const num = (v) => {
@@ -65,7 +81,8 @@ export function checkProduct(p) {
 
   const eans = {};
   for (const v of p.variants || []) {
-    const name = v.title && v.title !== "Default Title" ? `„${v.title}“: ` : "";
+    const label = v.title || v.option;
+    const name = label && label !== "Default Title" ? `„${label}“: ` : "";
     const price = num(v.price);
     const ek = num(v.cost);
     const min = num(v.meta?.omnia_min);
@@ -83,6 +100,7 @@ export function checkProduct(p) {
       else if (price !== null && (price < min - 0.001 || price > max + 0.001)) add("info", `${name}Preis liegt außerhalb Min/Max (wird beim nächsten Repricer-Lauf angepasst)`);
     }
     if (!v.meta?.google_unit_pricing_measure?.trim()) add("info", `${name}Grundpreis-Menge fehlt`);
+    if (!num(v.weight)) add("warning", `${name}Versandgewicht fehlt`);
   }
   for (const [ean, n] of Object.entries(eans)) if (n > 1) add("critical", `EAN ${ean} ist ${n}× vergeben`);
   return issues;

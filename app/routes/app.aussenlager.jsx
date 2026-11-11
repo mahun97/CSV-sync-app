@@ -690,12 +690,12 @@ export default function Index() {
   return (
     <Page
       title="Außenlager"
-      subtitle="Hauptlager, Außenlager und Meldebestand je Sorte – Werte direkt in der Tabelle anklicken und ändern"
+      subtitle="Hauptlager, Außenlager und Meldebestand je Geschmack – Werte direkt in der Tabelle anklicken und ändern"
       titleMetadata={busy ? <Spinner size="small" /> : null}
     >
       <BlockStack gap="400">
         <InlineGrid columns={{ xs: 1, md: 3 }} gap="300">
-          <Stat label="Sorten mit Außenlager" value={unfilteredCount} active={filterType === "none"} onClick={() => go({ filter: "none" })} hint="Alle anzeigen" />
+          <Stat label="Geschmäcker mit Außenlager" value={unfilteredCount} active={filterType === "none"} onClick={() => go({ filter: "none" })} hint="Alle anzeigen" />
           <Stat label="Hauptlager ≤ Außenlager" value={redCount} tone={redCount ? "critical" : undefined} active={filterType === "lowMain"} onClick={() => go({ filter: "lowMain" })} hint="Umlagern ins Hauptlager" />
           <Stat label="Hauptlager − Melde ≤ Außenlager" value={orangeCount} tone={orangeCount ? "caution" : undefined} active={filterType === "lowAfterReorder"} onClick={() => go({ filter: "lowAfterReorder" })} hint="Bald umlagern" />
         </InlineGrid>
@@ -742,7 +742,7 @@ export default function Index() {
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <tr><td colSpan="8" style={{ ...td, textAlign: "center", padding: 40 }}><Text tone="subdued" as="p">Keine Sorten für diese Auswahl.</Text></td></tr>
+                  <tr><td colSpan="8" style={{ ...td, textAlign: "center", padding: 40 }}><Text tone="subdued" as="p">Keine Geschmäcker für diese Auswahl.</Text></td></tr>
                 ) : (
                   rows.map(({ product, variant: vr }) => {
                     const main = Number(vr.inventoryQuantity) || 0;
@@ -795,7 +795,7 @@ export default function Index() {
           <Box padding="300">
             <InlineStack align="space-between" blockAlign="center">
               <Text as="p" variant="bodySm" tone="subdued">
-                {filterType === "none" ? `${totalCount} Sorten` : `${totalCount} von ${unfilteredCount} Sorten`}{q ? ` · Suche „${q}“` : ""} · sortiert nach Hersteller, Artikel, Hauptlager
+                {filterType === "none" ? `${totalCount} Geschmäcker` : `${totalCount} von ${unfilteredCount} Geschmäckern`}{q ? ` · Suche „${q}“` : ""} · sortiert nach Hersteller, Artikel, Hauptlager
               </Text>
               <Pagination
                 hasPrevious={currentPage > 1}

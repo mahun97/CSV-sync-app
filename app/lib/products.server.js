@@ -26,9 +26,11 @@ const PRODUCT_QUERY = `
         nodes {
           id title sku barcode price compareAtPrice
           selectedOptions { name value }
+          media(first: 1) { nodes { id } }
           inventoryItem {
             id
             unitCost { amount }
+            measurement { weight { value unit } }
             inventoryLevels(first: 5) { nodes { location { id name } quantities(names: ["available"]) { quantity } } }
           }
           ${vmAliases}
@@ -38,6 +40,12 @@ const PRODUCT_QUERY = `
     locations(first: 10) { nodes { id name isActive } }
   }
 `;
+
+const toGrams = (w) => {
+  if (!w || !w.value) return "";
+  const f = { GRAMS: 1, KILOGRAMS: 1000, OUNCES: 28.3495, POUNDS: 453.592 }[w.unit] || 1;
+  return String(Math.round(w.value * f));
+};
 
 const pickMeta = (node, fields) => Object.fromEntries(fields.map((k) => [k, node[`m_${k}`]?.value ?? ""]));
 
@@ -88,6 +96,8 @@ export async function loadProduct(admin, gid) {
           shopPrice: v.price,
           compareAtPrice: v.compareAtPrice || "",
           cost: v.inventoryItem.unitCost?.amount ?? "",
+          weight: toGrams(v.inventoryItem.measurement?.weight),
+          imageId: v.media?.nodes?.[0]?.id || "",
           inventoryItemId: v.inventoryItem.id,
           stock: level?.quantities?.[0]?.quantity ?? "",
           stockLocationId: level?.location?.id || mainLoc,
@@ -190,7 +200,12 @@ function variantCreateInput(v, optionName, locationId) {
     optionValues: [{ optionName, name: (v.option || "").trim() || "Default Title" }],
     price: price.toFixed(2),
     barcode: v.barcode || null,
-    inventoryItem: { sku: v.sku || null, tracked: true, ...(num(v.cost) !== null ? { cost: num(v.cost) } : {}) },
+    inventoryItem: {
+      sku: v.sku || null,
+      tracked: true,
+      ...(num(v.cost) !== null ? { cost: num(v.cost) } : {}),
+      ...(num(v.weight) ? { measurement: { weight: { value: num(v.weight), unit: "GRAMS" } } } : {}),
+    },
     metafields: meta,
   };
   if (num(v.compareAtPrice)) input.compareAtPrice = num(v.compareAtPrice).toFixed(2);
@@ -297,6 +312,7 @@ export async function saveProduct(admin, data, original, locationId) {
     const inv = {};
     if (v.sku !== o.sku) inv.sku = v.sku;
     if (num(v.cost) !== null && num(v.cost) !== num(o.cost)) inv.cost = num(v.cost);
+    if (num(v.weight) !== null && num(v.weight) !== num(o.weight)) inv.measurement = { weight: { value: num(v.weight), unit: "GRAMS" } };
     if (Object.keys(inv).length) input.inventoryItem = inv;
     bulk.push(input);
 
@@ -325,6 +341,24 @@ export async function saveProduct(admin, data, original, locationId) {
   await flushMetafields(admin, set, del, errors);
   await setStock(admin, stock, errors);
   await applyMedia(admin, pid, data.media, original?.images, errors);
+
+  // Bild je Geschmack (nur bereits gespeicherte Bilder)
+  const detach = [];
+  const append = [];
+  for (const v of data.variants.filter((x) => x.id)) {
+    const o = origVariants[v.id] || {};
+    if ((v.imageId || "") === (o.imageId || "")) continue;
+    if (o.imageId) detach.push({ variantId: v.id, mediaIds: [o.imageId] });
+    if (v.imageId) append.push({ variantId: v.id, mediaIds: [v.imageId] });
+  }
+  if (detach.length) {
+    const d = await gql(admin, `mutation ($p: ID!, $m: [ProductVariantDetachMediaInput!]!) { productVariantDetachMedia(productId: $p, variantMedia: $m) { userErrors { message } } }`, { p: pid, m: detach });
+    errors.push(...d.productVariantDetachMedia.userErrors.map((e) => `Bild lösen: ${e.message}`));
+  }
+  if (append.length) {
+    const d = await gql(admin, `mutation ($p: ID!, $m: [ProductVariantAppendMediaInput!]!) { productVariantAppendMedia(productId: $p, variantMedia: $m) { userErrors { message } } }`, { p: pid, m: append });
+    errors.push(...d.productVariantAppendMedia.userErrors.map((e) => `Bild je Geschmack: ${e.message}`));
+  }
   return { errors };
 }
 
@@ -360,7 +394,12 @@ export async function createProduct(admin, data, locationId) {
       optionValues: [{ optionName, name: single ? "Default Title" : v.option.trim() }],
       price: price.toFixed(2),
       barcode: v.barcode || null,
-      inventoryItem: { sku: v.sku || null, tracked: true, ...(num(v.cost) !== null ? { cost: num(v.cost) } : {}) },
+      inventoryItem: {
+        sku: v.sku || null,
+        tracked: true,
+        ...(num(v.cost) !== null ? { cost: num(v.cost) } : {}),
+        ...(num(v.weight) ? { measurement: { weight: { value: num(v.weight), unit: "GRAMS" } } } : {}),
+      },
       metafields: meta,
     };
     if (num(v.compareAtPrice)) input.compareAtPrice = num(v.compareAtPrice).toFixed(2);
@@ -395,4 +434,15 @@ export async function createProduct(admin, data, locationId) {
   const id = d.productSet.product?.id;
   if (id) await applyMedia(admin, id, data.media, [], errors);
   return { id, errors };
+}
+
+export async function resolveSkus(admin, skus) {
+  const list = [...new Set(skus.map((x) => String(x || "").trim()).filter(Boolean))];
+  if (!list.length) return {};
+  const d = await gql(
+    admin,
+    `query ($q: String) { productVariants(first: 50, query: $q) { nodes { sku displayName product { id } } } }`,
+    { q: list.map((x) => `sku:"${x.replace(/"/g, "")}"`).join(" OR ") },
+  );
+  return Object.fromEntries(d.productVariants.nodes.map((n) => [n.sku, { title: n.displayName, productId: n.product.id }]));
 }
