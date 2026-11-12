@@ -24,6 +24,7 @@ export default function App() {
         </Link>
         <Link to="/app/repricer">Repricer</Link>
         <Link to="/app/produkte">Produkte</Link>
+        <Link to="/app/dubletten">Doppelte Nummern</Link>
         <Link to="/app/aussenlager">Außenlager</Link>
       </NavMenu>
       <Outlet />

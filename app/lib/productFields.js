@@ -46,7 +46,13 @@ export const PRODUCT_AUTO_FIELDS = [
   { key: "hersteller", label: "Hersteller (Metaobjekt)", type: "metaobject_reference" },
 ];
 
-export const PRODUCT_METAFIELDS = [...PRODUCT_TEXT_FIELDS, ...PRODUCT_EXPORT_FIELDS, ...PRODUCT_AUTO_FIELDS];
+// Artikelnummern aus dem Altshop, müssen je Produkt eindeutig sein (SKU beginnt mit dieser Nummer)
+export const PRODUCT_ID_FIELDS = [
+  { key: "product_model", label: "Product model", type: "number_integer" },
+  { key: "products_id", label: "Products id", type: "number_integer" },
+];
+
+export const PRODUCT_METAFIELDS = [...PRODUCT_TEXT_FIELDS, ...PRODUCT_EXPORT_FIELDS, ...PRODUCT_AUTO_FIELDS, ...PRODUCT_ID_FIELDS];
 
 // Varianten-Metafelder, die direkt bearbeitet werden (Preis-JSONs werden separat gepflegt)
 export const VARIANT_METAFIELDS = [

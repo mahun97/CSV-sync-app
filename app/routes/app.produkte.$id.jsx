@@ -1,5 +1,5 @@
 import { json, redirect } from "@remix-run/node";
-import { useActionData, useLoaderData, useNavigate, useNavigation, useSubmit } from "@remix-run/react";
+import { useActionData, useFetcher, useLoaderData, useNavigate, useNavigation, useSubmit } from "@remix-run/react";
 import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   Page,
@@ -33,6 +33,7 @@ import prisma from "../db.server";
 import { VARIANT_METAFIELDS, checkProduct, computeLabels, seoSuggestion, num } from "../lib/productFields";
 import { loadProduct, loadLocations, saveProduct, createProduct, resolveSkus } from "../lib/products.server";
 import { getCatalog } from "../lib/catalog.server";
+import { getNumberIndex, findConflicts, nextFreeNumber, rememberNumbers } from "../lib/artikelnummern.server";
 import { tagsForCategory, TAX_TAGS, SHIPPING_TAGS, SPECIAL_TAGS } from "../lib/catalogShared";
 import RichTextEditor, { HtmlPreview } from "../components/RichTextEditor";
 import ImageManager from "../components/ImageManager";
@@ -77,6 +78,7 @@ function emptyProduct() {
       content: "", content2: "", content3: "", crosssell1: "", crosssell2: "", crosssell3: "", crosssell4: "", crosssell5: "",
       export_repricer: "1", google_shopping_de: "true", google_shopping_at: "true", idealo: "true",
       google_product_category: "", idealo_category: "", google_custom_label_0: "", google_custom_label_1: "kein", google_custom_label_2: "", hersteller: "",
+      product_model: "", products_id: "",
     },
     variants: [emptyVariant()],
   };
@@ -169,6 +171,13 @@ export const loader = async ({ request, params }) => {
     }
     const s = seoSuggestion(product.title, product.vendor);
     product = { ...product, handle: s.handle, seoTitle: s.seoTitle, seoDescription: s.seoDescription };
+    // Artikelnummer nie von der Vorlage übernehmen, sondern nächste freie vorschlagen
+    try {
+      const next = nextFreeNumber(await getNumberIndex(admin, { fresh: true }));
+      product.meta = { ...product.meta, product_model: next, products_id: next };
+    } catch {
+      product.meta = { ...product.meta, product_model: "", products_id: "" };
+    }
     const crossInfo = await resolveSkus(admin, [1, 2, 3, 4, 5].map((i) => product.meta[`crosssell${i}`]));
     return json({ mode: "edit", isNew: true, product, media, catalog, history: [], storeHandle, origin, seoSync: true, crossInfo });
   }
@@ -194,13 +203,24 @@ export const action = async ({ request, params }) => {
   const data = JSON.parse(form.get("data"));
   const locations = await loadLocations(admin);
 
+  // Doppelte Artikelnummer nur speichern, wenn ausdrücklich bestätigt
+  if (!data.allowDuplicateNumber) {
+    const index = await getNumberIndex(admin, { fresh: true });
+    const conflicts = findConflicts(index, { productId: params.id === "neu" ? null : gidOf(params.id), product_model: data.meta?.product_model, products_id: data.meta?.products_id });
+    if (conflicts.length) {
+      return json({ ok: false, numberConflicts: conflicts, errors: conflicts.map((c) => `${c.label} ${c.value} ist schon vergeben bei: ${c.others.map((o) => o.title).join(", ")}`) });
+    }
+  }
+
   if (params.id === "neu") {
     const { id, errors } = await createProduct(admin, data, locations[0]?.id);
     if (!id) return json({ ok: false, errors });
+    rememberNumbers({ id, title: data.title, status: data.status, product_model: data.meta?.product_model, products_id: data.meta?.products_id });
     return redirect(`/app/produkte/${id.split("/").pop()}?angelegt=1${errors.length ? "&hinweise=" + encodeURIComponent(errors.join(" | ")) : ""}`);
   }
   const loaded = await loadProduct(admin, gidOf(params.id));
   const { errors } = await saveProduct(admin, { ...data, id: loaded.product.id }, loaded.product, locations[0]?.id);
+  rememberNumbers({ id: loaded.product.id, title: data.title, status: data.status, product_model: data.meta?.product_model, products_id: data.meta?.products_id });
   return json({ ok: errors.length === 0, errors, savedAt: Date.now() });
 };
 
@@ -492,6 +512,8 @@ function Editor() {
   }, [initial, initialMedia, isNew, initialSeoSync]);
 
   const update = useCallback((patch) => { setP((cur) => ({ ...cur, ...patch })); setDirty(true); }, []);
+  // Speichern wegen doppelter Artikelnummer abgelehnt → Änderungen bleiben offen
+  useEffect(() => { if (actionData?.numberConflicts?.length) setDirty(true); }, [actionData]);
   const setMeta = (k) => (v) => update({ meta: { ...p.meta, [k]: typeof v === "boolean" ? String(v) : v } });
   const setMediaDirty = (fn) => { setMedia(fn); setDirty(true); };
 
@@ -529,8 +551,30 @@ function Editor() {
   const gpsrIndex = catalog.gpsr.findIndex((g) => g.html === p.meta.herstellerinformation);
   const gpsrValue = gpsrIndex >= 0 ? String(gpsrIndex) : p.meta.herstellerinformation ? "eigen" : "";
 
+  // Live-Prüfung der Artikelnummern gegen alle anderen Produkte
+  const numFetcher = useFetcher();
+  const pm = String(p.meta.product_model ?? "").trim();
+  const pi = String(p.meta.products_id ?? "").trim();
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const q = new URLSearchParams({ pm, pi });
+      if (!isNew && p.id) q.set("id", p.id);
+      numFetcher.load(`/app/artikelnummer?${q}`);
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pm, pi, isNew, p.id]);
+  const numData = numFetcher.data;
+  const numConflicts = useMemo(() => (numData && numData.checked === `${pm}|${pi}` ? numData.conflicts : []), [numData, pm, pi]);
+  const nextNumber = numData?.next;
+
   const labels = computeLabels(p.variants, p.meta);
-  const issues = useMemo(() => checkProduct({ ...p, images: media }), [p, media]);
+  const baseIssues = useMemo(() => checkProduct({ ...p, images: media }), [p, media]);
+  const issues = useMemo(() => [
+    ...numConflicts.map((c) => ({ level: "critical", text: `${c.label} ${c.value} ist schon vergeben bei: ${c.others.map((o) => o.title).join(", ")}` })),
+    ...(!pm ? [{ level: "warning", text: "Product model (Artikelnummer) fehlt" }] : []),
+    ...baseIssues,
+  ], [numConflicts, baseIssues, pm]);
   const critical = issues.filter((x) => x.level === "critical").length;
   const uploading = media.some((m) => m.uploading);
 
@@ -549,10 +593,18 @@ function Editor() {
     update({ variants: p.variants.map((v, i) => (i === 0 ? v : { ...v, price: f.price, cost: f.cost, meta: { ...v.meta, omnia_min: f.meta.omnia_min, omnia_max: f.meta.omnia_max } })) });
   };
 
-  const save = () => {
-    submit({ data: JSON.stringify({ ...p, meta: { ...p.meta, ...labels }, media }) }, { method: "post" });
+  const save = (force = false) => {
+    let allow = force === true;
+    if (!allow && numConflicts.length) {
+      const msg = numConflicts.map((c) => `${c.label} ${c.value} ist schon vergeben bei:\n${c.others.map((o) => `  • ${o.title}`).join("\n")}`).join("\n\n");
+      if (!window.confirm(`${msg}\n\nTrotzdem speichern?`)) return;
+      allow = true;
+    }
+    submit({ data: JSON.stringify({ ...p, meta: { ...p.meta, ...labels }, media, allowDuplicateNumber: allow }) }, { method: "post" });
     setDirty(false);
   };
+  const applyNextNumber = () => nextNumber && update({ meta: { ...p.meta, product_model: nextNumber, products_id: nextNumber } });
+  const openProduct = (gid) => window.open(`/app/produkte/${gid.split("/").pop()}`, "_blank");
   const discard = () => { setP(initial); setMedia(initialMedia); setDirty(false); };
 
   const params = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
@@ -592,6 +644,24 @@ function Editor() {
           <Banner tone="critical" title="Nicht alles wurde gespeichert"><ul>{actionData.errors.map((e, i) => <li key={i}>{e}</li>)}</ul></Banner>
         )}
         {actionData?.ok && !dirty && <Banner tone="success" title="Gespeichert" />}
+        {numConflicts.length > 0 && (
+          <Banner tone="critical" title="Artikelnummer ist schon vergeben">
+            <BlockStack gap="200">
+              {numConflicts.map((c) => (
+                <BlockStack key={c.field} gap="100">
+                  <Text as="p">{c.label} <b>{c.value}</b> steht bereits bei:</Text>
+                  {c.others.map((o) => (
+                    <InlineStack key={o.id} gap="200" blockAlign="center">
+                      <Button variant="plain" onClick={() => openProduct(o.id)}>{o.title}</Button>
+                      <Badge tone={o.status === "ACTIVE" ? "success" : undefined}>{o.status === "ACTIVE" ? "Aktiv" : o.status === "DRAFT" ? "Entwurf" : "Archiviert"}</Badge>
+                    </InlineStack>
+                  ))}
+                </BlockStack>
+              ))}
+              {nextNumber && <InlineStack><Button onClick={applyNextNumber}>{`Nächste freie Nummer ${nextNumber} für beide Felder übernehmen`}</Button></InlineStack>}
+            </BlockStack>
+          </Banner>
+        )}
 
         <Card>
           <BlockStack gap="300">
@@ -698,6 +768,23 @@ function Editor() {
                 <BlockStack gap="300">
                   <Text as="h2" variant="headingMd">Status</Text>
                   <Select label="Status" labelHidden options={[{ label: "Entwurf", value: "DRAFT" }, { label: "Aktiv", value: "ACTIVE" }, { label: "Archiviert", value: "ARCHIVED" }]} value={p.status} onChange={(v) => update({ status: v })} />
+                </BlockStack>
+              </Card>
+
+              <Card>
+                <BlockStack gap="300">
+                  <InlineStack align="space-between" blockAlign="center">
+                    <Text as="h2" variant="headingMd">Artikelnummer</Text>
+                    {numConflicts.length > 0 ? <Badge tone="critical">doppelt</Badge> : pm && numData?.checked === `${pm}|${pi}` ? <Badge tone="success">frei</Badge> : null}
+                  </InlineStack>
+                  <InlineGrid columns={2} gap="300">
+                    <TextField label="Product model" type="number" value={pm} onChange={setMeta("product_model")} autoComplete="off"
+                      error={numConflicts.some((c) => c.field === "product_model") ? "schon vergeben" : undefined} />
+                    <TextField label="Products id" type="number" value={pi} onChange={setMeta("products_id")} autoComplete="off"
+                      error={numConflicts.some((c) => c.field === "products_id") ? "schon vergeben" : undefined} />
+                  </InlineGrid>
+                  <Text as="p" variant="bodySm" tone="subdued">Beide Felder bekommen dieselbe Nummer, die SKU beginnt damit (z. B. {pm || "3139"}-1-…).{nextNumber ? ` Nächste freie Nummer: ${nextNumber}.` : ""}</Text>
+                  {nextNumber && pm !== nextNumber && (isNew || numConflicts.length > 0 || !pm) && <InlineStack><Button variant="plain" onClick={applyNextNumber}>{`${nextNumber} übernehmen`}</Button></InlineStack>}
                 </BlockStack>
               </Card>
 
